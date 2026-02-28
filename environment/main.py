@@ -17,23 +17,76 @@ if url and key:
 else:
     client = None
     print("Warning: Supabase credentials not found.")
-    exit(1)
+
+# Global Registry of all available tools in SynthSpace
+GLOBAL_TOOLS = {
+    "execute_python": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "execute_python",
+                "description": "Execute python code.",
+                "parameters": {"type": "object", "properties": {"code": {"type": "string"}}}
+            }
+        },
+        "function": lambda code: f"Executed: {code}"  # Placeholder for actual E2B execution
+    },
+    "read_file": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read file from paths.",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+            }
+        },
+        "function": lambda path: f"Content of {path}"
+    },
+    "web_search": {
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}
+            }
+        },
+        "function": lambda query: f"Search results for {query}"
+    }
+}
 
 class Environment:
-    def __init__(self, id: str = None):
+    def __init__(self, id: str = None, objective: str = "Survive and interact.", active_tools: List[str] = None):
         """
         Initialize an Environment for multi-agent interaction.
         If an id is provided, it loads the environment from the database,
         otherwise it creates a new one.
+        
+        Args:
+            id: Optional DB ID to load an existing environment.
+            objective: The main goal or task of this specific environment.
+            active_tools: List of tool names from GLOBAL_TOOLS to enable for this environment.
         """
         self.id = id or str(uuid.uuid4())
         self.status = "INITIALIZING"
         self.max_turns = 100
         self.current_turn = 0
         self.created_at = datetime.utcnow().isoformat()
+        self.objective = objective
         
         self.synths = {}          # synth_id -> synth db record
-        self.tools = {}           # tool_name -> tool function/schema
+        self.tools = {}           # active tools for this environment
+        
+        # Load requested active tools from the global registry
+        if active_tools:
+            for t in active_tools:
+                if t in GLOBAL_TOOLS:
+                    self.tools[t] = GLOBAL_TOOLS[t]
+                else:
+                    print(f"Warning: Tool '{t}' not found in global registry.")
+        else:
+            # Default to all tools if none specified
+            self.tools = GLOBAL_TOOLS.copy()
         
         if id and client:
             self._load_state()
@@ -48,6 +101,12 @@ class Environment:
             self.status = data.get("status")
             self.max_turns = data.get("max_turns")
             self.current_turn = data.get("current_turn")
+            self.objective = data.get("objective", self.objective)
+            
+            # Load the active tools for this environment if saved
+            saved_tools = data.get("active_tools")
+            if saved_tools:
+                self.tools = {t: GLOBAL_TOOLS[t] for t in saved_tools if t in GLOBAL_TOOLS}
             
         synths_response = client.table("synths").select("*").eq("env_id", self.id).execute()
         for synth in synths_response.data:
@@ -61,7 +120,9 @@ class Environment:
             "status": self.status,
             "max_turns": self.max_turns,
             "current_turn": self.current_turn,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "objective": self.objective,
+            "active_tools": list(self.tools.keys())
         }
         client.table("environments").upsert(data).execute()
 
