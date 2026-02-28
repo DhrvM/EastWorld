@@ -1,22 +1,6 @@
-import os
 import uuid
-import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-
-from supabase import create_client, Client
-from dotenv import load_dotenv
-
-load_dotenv()
-
-url: str = os.getenv("SUPABASE_URL")
-key: str = os.getenv("SUPABASE_KEY")
-
-if url and key:
-    client: Client = create_client(url, key)
-else:
-    client = None
-    print("Warning: Supabase credentials not found.")
 
 # Global Registry of all available tools in SynthSpace
 GLOBAL_TOOLS = {
@@ -58,12 +42,10 @@ GLOBAL_TOOLS = {
 class Environment:
     def __init__(self, id: str = None, objective: str = "Survive and interact.", active_tools: List[str] = None):
         """
-        Initialize an Environment for multi-agent interaction.
-        If an id is provided, it loads the environment from the database,
-        otherwise it creates a new one.
+        Initialize an in-memory Environment for multi-agent interaction.
         
         Args:
-            id: Optional DB ID to load an existing environment.
+            id: Optional ID for the environment.
             objective: The main goal or task of this specific environment.
             active_tools: List of tool names from GLOBAL_TOOLS to enable for this environment.
         """
@@ -74,8 +56,9 @@ class Environment:
         self.created_at = datetime.utcnow().isoformat()
         self.objective = objective
         
-        self.synths = {}          # synth_id -> synth db record
+        self.synths = {}          # synth_id -> synth object/dict
         self.tools = {}           # active tools for this environment
+        self.event_logs = []      # in-memory transcript of events
         
         # Load requested active tools from the global registry
         if active_tools:
@@ -87,68 +70,48 @@ class Environment:
         else:
             # Default to all tools if none specified
             self.tools = GLOBAL_TOOLS.copy()
-        
-        if id and client:
-            self._load_state()
-        elif client:
-            self._save_state()
 
-    def _load_state(self):
-        """Load environment state and synths from Supabase."""
-        response = client.table("environments").select("*").eq("id", self.id).execute()
-        if response.data:
-            data = response.data[0]
-            self.status = data.get("status")
-            self.max_turns = data.get("max_turns")
-            self.current_turn = data.get("current_turn")
-            self.objective = data.get("objective", self.objective)
-            
-            # Load the active tools for this environment if saved
-            saved_tools = data.get("active_tools")
-            if saved_tools:
-                self.tools = {t: GLOBAL_TOOLS[t] for t in saved_tools if t in GLOBAL_TOOLS}
-            
-        synths_response = client.table("synths").select("*").eq("env_id", self.id).execute()
-        for synth in synths_response.data:
-            self.synths[synth["id"]] = synth
-
-    def _save_state(self):
-        """Save or update environment state in Supabase."""
-        if not client: return
-        data = {
-            "id": self.id,
-            "status": self.status,
-            "max_turns": self.max_turns,
-            "current_turn": self.current_turn,
-            "created_at": self.created_at,
-            "objective": self.objective,
-            "active_tools": list(self.tools.keys())
-        }
-        client.table("environments").upsert(data).execute()
-
-    def add_synth(self, synth_data: Dict[str, Any]):
+    def add_synth(self, synth: Any):
         """
         Add a Synth agent to the environment.
-        synth_data should contain 'synth_name', 'supermemory_user_id', 
-        'persona_prompt', 'allowed_tools', and 'allowed_connections'.
+        `synth` can be a Synth class instance or a dictionary.
+        It must expose an `id` and optionally `allowed_tools` and `allowed_connections`.
         """
-        synth_id = synth_data.get("id", str(uuid.uuid4()))
-        synth_data["id"] = synth_id
-        synth_data["env_id"] = self.id
-        self.synths[synth_id] = synth_data
+        # Handle dicts or object instances
+        is_dict = isinstance(synth, dict)
+        synth_id = synth.get("id", str(uuid.uuid4())) if is_dict else getattr(synth, "id", str(uuid.uuid4()))
+        synth_name = synth.get("synth_name", "Unknown Synth") if is_dict else getattr(synth, "synth_name", "Unknown Synth")
+        allowed_tools = synth.get("allowed_tools", []) if is_dict else getattr(synth, "allowed_tools", [])
         
-        if client:
-            client.table("synths").upsert(synth_data).execute()
-            self.log_event(
-                actor_id="system", 
-                event_type="SYSTEM_ALERT", 
-                payload={"message": f"Synth {synth_data.get('synth_name')} joined the environment."}
-            )
+        # Validate that the synth's allowed tools are within the environment's active tools
+        valid_tools = [t for t in allowed_tools if t in self.tools]
+        if valid_tools != allowed_tools:
+            print(f"Warning: Some tools for synth {synth_name} are not permitted in this environment's active toolset.")
+            if is_dict:
+                synth["allowed_tools"] = valid_tools
+            else:
+                setattr(synth, "allowed_tools", valid_tools)
+        
+        # Assign ID if missing initially and link to environment
+        if is_dict:
+            synth["id"] = synth_id
+            synth["env_id"] = self.id
+        else:
+            setattr(synth, "id", synth_id)
+            setattr(synth, "env_id", self.id)
+            
+        self.synths[synth_id] = synth
+        
+        self.log_event(
+            actor_id="system", 
+            event_type="SYSTEM_ALERT", 
+            payload={"message": f"Synth {synth_name} joined the environment."}
+        )
         return synth_id
 
     def register_tool(self, tool_name: str, schema: dict, function: callable):
         """
-        Register a tool that agents in the environment can access if permitted.
+        Dynamically register a tool to this specific environment at runtime.
         """
         self.tools[tool_name] = {
             "schema": schema,
@@ -157,18 +120,17 @@ class Environment:
 
     def log_event(self, actor_id: str, event_type: str, payload: Dict[str, Any]):
         """
-        Log an event (message or tool use) to the transcript.
+        Log an event (message or tool use) to the in-memory transcript.
         event_types: MESSAGE, TOOL_CALL, TOOL_RESULT, SYSTEM_ALERT
         """
         event = {
             "id": str(uuid.uuid4()),
-            "env_id": self.id,
             "actor_id": actor_id,
             "event_type": event_type,
-            "payload": payload
+            "payload": payload,
+            "timestamp": datetime.utcnow().isoformat()
         }
-        if client:
-            client.table("event_logs").insert(event).execute()
+        self.event_logs.append(event)
         return event
 
     def broadcast_message(self, sender_id: str, message: str, recipient_ids: Optional[List[str]] = None):
@@ -181,7 +143,8 @@ class Environment:
         if not sender:
             raise ValueError(f"Sender {sender_id} not found in this environment.")
             
-        allowed_connections = sender.get("allowed_connections") or []
+        is_dict = isinstance(sender, dict)
+        allowed_connections = sender.get("allowed_connections", []) if is_dict else getattr(sender, "allowed_connections", [])
         
         # Determine actual recipients
         if recipient_ids:
@@ -197,7 +160,6 @@ class Environment:
         # Log the message event
         self.log_event(actor_id=sender_id, event_type="MESSAGE", payload=payload)
         self.current_turn += 1
-        self._save_state()
         
         return payload
 
@@ -210,13 +172,16 @@ class Environment:
         if not synth:
             return {"error": "Synth not found"}
             
-        allowed_tools = synth.get("allowed_tools") or []
+        is_dict = isinstance(synth, dict)
+        synth_name = synth.get("synth_name", "Unknown Synth") if is_dict else getattr(synth, "synth_name", "Unknown Synth")
+        allowed_tools = synth.get("allowed_tools", []) if is_dict else getattr(synth, "allowed_tools", [])
+        
         if tool_name not in allowed_tools:
-            return {"error": f"Tool '{tool_name}' not permitted for synth '{synth.get('synth_name')}'"}
+            return {"error": f"Tool '{tool_name}' not permitted for synth '{synth_name}'"}
             
         tool = self.tools.get(tool_name)
         if not tool:
-            return {"error": f"Tool '{tool_name}' not registered in the environment"}
+            return {"error": f"Tool '{tool_name}' not active in the environment"}
             
         # Log the tool call
         self.log_event(actor_id=synth_id, event_type="TOOL_CALL", payload={"tool_name": tool_name, "arguments": arguments})
@@ -239,11 +204,9 @@ class Environment:
         """
         if self.status != "RUNNING":
             self.status = "RUNNING"
-            self._save_state()
             
         if self.current_turn >= self.max_turns:
             self.status = "TERMINATED"
-            self._save_state()
             print(f"Environment {self.id} reached max turns.")
             return False
 
@@ -251,5 +214,4 @@ class Environment:
         # For each active synth, we would assemble context and prompt their LLM
         
         self.current_turn += 1
-        self._save_state()
         return True

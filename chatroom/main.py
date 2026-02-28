@@ -1,21 +1,31 @@
 import asyncio
 import uuid
-from typing import List, Dict, Set, Optional
+from typing import List, Dict, Set, Optional, Any
 
 class Agent:
-    def __init__(self, id: str, name: str, connections: List[str]):
+    def __init__(self, id: str = None, name: str = None, connections: List[str] = None, synth: Any = None):
         """
-        id: Unique identifier
-        name: Human-readable name
-        connections: List of agent IDs this agent is allowed to communicate with
+        id: Unique identifier (overridden by synth.id if provided)
+        name: Human-readable name (overridden by synth.synth_name)
+        connections: List of agent IDs allowed communication (overridden by synth.allowed_connections)
+        synth: An optional Synth agent instance from Environment.
         """
-        self.id = id
-        self.name = name
-        self.connections = set(connections)
+        if synth:
+            is_dict = isinstance(synth, dict)
+            self.id = synth.get("id") if is_dict else getattr(synth, "id")
+            self.name = synth.get("synth_name", self.id) if is_dict else getattr(synth, "synth_name", self.id)
+            self.connections = set(synth.get("allowed_connections", [])) if is_dict else set(getattr(synth, "allowed_connections", []))
+            self.synth = synth
+        else:
+            self.id = id
+            self.name = name
+            self.connections = set(connections or [])
+            self.synth = None
+            
         self.inbox: asyncio.Queue = asyncio.Queue()
         self.current_room: Optional[str] = None
 
-    async def send_message(self, room: ChatRoom, content: str):
+    async def send_message(self, room: 'ChatRoom', content: str):
         """Send a message to a room concurrently."""
         await room.broadcast(self, content)
 

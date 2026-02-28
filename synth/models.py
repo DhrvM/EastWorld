@@ -20,6 +20,8 @@ class SynthConfig:
         synth will be during bootstrapping.
     allowed_connections : list[str]
         IDs of other synths this agent is allowed to message.
+    allowed_tools : list[str]
+        Names of the tools this synth is allowed to execute.
     model : str
         OpenAI model name to use for this synth (default ``gpt-4o``).
     """
@@ -27,6 +29,7 @@ class SynthConfig:
     synth_id: str
     persona_prompt: str
     allowed_connections: list[str] = field(default_factory=list)
+    allowed_tools: list[str] = field(default_factory=list)
     model: str = "gpt-4o"
 
     def __post_init__(self) -> None:

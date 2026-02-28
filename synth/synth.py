@@ -68,9 +68,13 @@ class Synth:
     def __init__(self, config: SynthConfig, bootstrap: bool = True) -> None:
         self.config = config
         self.synth_id = config.synth_id
+        # Also alias to id so Environment can easily read it
+        self.id = config.synth_id
+        self.synth_name = config.synth_id # Fallback name
         self.model = config.model
         self.persona_prompt = config.persona_prompt
         self.allowed_connections = set(config.allowed_connections)
+        self.allowed_tools = config.allowed_tools
 
         # Bootstrap: expand the persona and seed Supermemory
         self._bootstrapped = False
