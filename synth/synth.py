@@ -35,6 +35,10 @@ Speak naturally — short sentences, casual tone, personality quirks.
 Don't monologue. Keep responses to 1-3 sentences unless the topic genuinely
 demands more depth. You can be blunt, disagreeable, distracted, or
 bored — whatever fits your persona in the moment.
+
+CRITICAL INSTRUCTION: If you feel you have nothing meaningful to add to the 
+current conversation based on your persona, or if the topic does not involve 
+you or interest you, output EXACTLY the phrase `[SKIP]` and nothing else.
 """
 
 
@@ -83,7 +87,7 @@ class Synth:
 
     # ── Public API ───────────────────────────────────────────────────────
 
-    def step(self, conversation: list[SynthMessage]) -> SynthMessage:
+    def step(self, conversation: list[SynthMessage]) -> Optional[SynthMessage]:
         """Execute one cognitive turn.
 
         The full loop (TDD §3.2):
@@ -99,8 +103,8 @@ class Synth:
 
         Returns
         -------
-        SynthMessage
-            The synth's response.
+        SynthMessage | None
+            The synth's response, or None if the synth decided to [SKIP] the turn.
         """
 
         # 1. Context assembly
@@ -124,6 +128,10 @@ class Synth:
             messages=messages,
         )
         reply_text: str = response.choices[0].message.content or ""
+
+        # Check if the synth decided it had nothing meaningful to say
+        if "[SKIP]" in reply_text:
+            return None
 
         # 4. Memory ingestion — store what just happened
         memory_record = (
