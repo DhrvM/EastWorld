@@ -30,12 +30,12 @@ def _get_oai_client() -> OpenAI:
 
 # ── Prompt used to expand a raw persona into structured facts + memories ─────
 _BOOTSTRAP_SYSTEM_PROMPT = """\
-You are a persona-expansion engine.  Given a raw persona description for a
+You are a persona-expansion engine.  Given a raw, highly specific persona description for a
 synthetic agent, produce TWO clearly-separated sections:
 
 ## Static Facts
 Bullet-pointed list of immutable biographical facts (name, age, occupation,
-personality traits, core beliefs, etc.)
+personality traits, core beliefs, etc.) This will also include the synth's talking style, personality, smartness level, etc.
 
 ## Seed Memories
 A set of 5-10 first-person memory snippets that this persona would plausibly
@@ -44,7 +44,7 @@ point-of-view, referencing concrete events, emotions, or decisions.  The
 richer and more specific these are, the more lifelike the agent will behave.
 
 Be creative but stay strictly consistent with the supplied persona.  Do NOT
-add facts that contradict the description.
+add facts that contradict the description. Be Highly detailed, avoid vage values and descriptions.
 """
 
 
@@ -100,7 +100,7 @@ def get_synth_context(synth_id: str, current_situation: str) -> str:
     for memories relevant to *current_situation* scoped to *synth_id*.
 
     Returns a formatted context block with three sections:
-    ``[YOUR BACKGROUND]``, ``[YOUR CURRENT STATE]``, ``[RELEVANT MEMORIES]``.
+    ``[YOUR PERSONALITY]``, ``[YOUR CURRENT STATE]``, ``[RELEVANT MEMORIES]``.
     """
 
     profile_data = _get_sm_client().profile(
@@ -115,7 +115,7 @@ def get_synth_context(synth_id: str, current_situation: str) -> str:
     )
 
     return (
-        f"[YOUR BACKGROUND]:\n{static_facts}\n\n"
+        f"[YOUR PERSONALITY]:\n{static_facts}\n\n"
         f"[YOUR CURRENT STATE]:\n{dynamic_context}\n\n"
         f"[RELEVANT MEMORIES]:\n{relevant_memories}"
     )
