@@ -28,7 +28,7 @@ class God:
     Usage
     -----
     >>> god = God(environment)
-    >>> answer = god.ask("How many synths adopted API X?")
+    >>> answer = god.ask("What themes emerged in this simulation?")
     """
 
     def __init__(self, environment: Any, model: str = "gpt-4o") -> None:

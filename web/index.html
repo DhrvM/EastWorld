@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EastWorld Local Demo</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; background: #0f1115; color: #e6e6e6; }
+    h1, h2 { margin: 8px 0; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { border: 1px solid #30333a; border-radius: 8px; padding: 12px; background: #171a21; }
+    label { display: block; margin-top: 8px; }
+    input, textarea, select, button { width: 100%; margin-top: 6px; padding: 8px; box-sizing: border-box; }
+    textarea { min-height: 80px; }
+    button { cursor: pointer; background: #2c6bed; color: white; border: none; border-radius: 4px; }
+    button.secondary { background: #555; }
+    .row { display: flex; gap: 8px; }
+    .row > * { flex: 1; }
+    pre { white-space: pre-wrap; background: #0f1115; border: 1px solid #30333a; border-radius: 6px; padding: 8px; max-height: 280px; overflow: auto; }
+    .small { font-size: 12px; color: #b8b8b8; }
+  </style>
+</head>
+<body>
+  <h1>EastWorld Local Demo</h1>
+  <p class="small">Setup simulation, upload artifacts, run rounds, chat with synths, and inspect transcript/traces.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h2>1) Create Simulation</h2>
+      <label>Task / Objective</label>
+      <textarea id="task" placeholder="Describe what synths should discuss"></textarea>
+      <label>Synths JSON (name + persona)</label>
+      <textarea id="synths">[
+  {"name":"Alice","persona":"You are Alice, a product-minded PM."},
+  {"name":"Bob","persona":"You are Bob, a skeptical engineer."},
+  {"name":"Cara","persona":"You are Cara, a growth marketer."}
+]</textarea>
+      <label><input type="checkbox" id="mockMode" checked /> Mock mode (no OpenAI/Supermemory)</label>
+      <button onclick="createSimulation()">Create Simulation</button>
+      <p id="simInfo" class="small"></p>
+    </div>
+
+    <div class="card">
+      <h2>2) Upload Artifact</h2>
+      <label>Type</label>
+      <select id="artifactType">
+        <option value="email">email</option>
+        <option value="api_doc">api_doc</option>
+        <option value="product_idea">product_idea</option>
+        <option value="document">document</option>
+      </select>
+      <label>Title</label>
+      <input id="artifactTitle" placeholder="Artifact title" />
+      <label>Upload (.txt/.md/.pdf)</label>
+      <input id="artifactFile" type="file" />
+      <button onclick="uploadArtifact()">Upload Artifact</button>
+      <p id="artifactStatus" class="small"></p>
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:16px;">
+    <div class="card">
+      <h2>3) Round Controls</h2>
+      <div class="row">
+        <button onclick="runOneRound()">Run 1 Round</button>
+        <button onclick="runManyRounds()">Run N Rounds</button>
+      </div>
+      <label>N rounds</label>
+      <input id="roundsN" type="number" min="1" max="100" value="3" />
+      <button class="secondary" onclick="refreshStats()">Refresh Stats</button>
+      <pre id="stats"></pre>
+    </div>
+
+    <div class="card">
+      <h2>4) Chat With Synth</h2>
+      <label>Synth</label>
+      <select id="chatSynth"></select>
+      <label>Your message</label>
+      <textarea id="chatText" placeholder="Ask a synth a question"></textarea>
+      <button onclick="chatSynth()">Send</button>
+      <pre id="chatResult"></pre>
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:16px;">
+    <div class="card">
+      <h2>5) GOD Query</h2>
+      <textarea id="godQuestion" placeholder="Ask for analysis"></textarea>
+      <button onclick="askGod()">Ask GOD</button>
+      <pre id="godAnswer"></pre>
+    </div>
+    <div class="card">
+      <h2>6) Transcript Events</h2>
+      <button class="secondary" onclick="refreshEvents()">Refresh Events</button>
+      <pre id="events"></pre>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>7) Trace Stream (JSONL events)</h2>
+    <button class="secondary" onclick="refreshTraces()">Refresh Traces</button>
+    <pre id="traces"></pre>
+  </div>
+
+  <script>
+    let envId = "";
+    let eventOffset = 0;
+
+    async function api(path, method = "GET", body = null, isForm = false) {
+      const opts = { method, headers: {} };
+      if (body) {
+        if (isForm) {
+          opts.body = body;
+        } else {
+          opts.headers["Content-Type"] = "application/json";
+          opts.body = JSON.stringify(body);
+        }
+      }
+      const res = await fetch(path, opts);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Request failed");
+      return data;
+    }
+
+    function requireEnv() {
+      if (!envId) throw new Error("Create a simulation first");
+    }
+
+    function setText(id, value) {
+      document.getElementById(id).textContent = value;
+    }
+
+    async function createSimulation() {
+      try {
+        const task = document.getElementById("task").value.trim();
+        const synths = JSON.parse(document.getElementById("synths").value);
+        const mockMode = document.getElementById("mockMode").checked;
+        const data = await api("/api/simulations", "POST", {
+          task: task || "Discuss provided artifacts and produce actionable feedback.",
+          synths,
+          bootstrap_synths: !mockMode,
+          mock_mode: mockMode
+        });
+        envId = data.env_id;
+        eventOffset = 0;
+        setText("simInfo", `env_id=${envId} | synths=${data.synth_ids.join(", ")} | trace=${data.trace_path}`);
+        await loadSynthDropdown();
+        await refreshStats();
+        await refreshEvents();
+        await refreshTraces();
+      } catch (e) {
+        setText("simInfo", `Error: ${e.message}`);
+      }
+    }
+
+    async function loadSynthDropdown() {
+      requireEnv();
+      const details = await api(`/api/simulations/${envId}`);
+      const select = document.getElementById("chatSynth");
+      select.innerHTML = "";
+      for (const s of details.synths) {
+        const opt = document.createElement("option");
+        opt.value = s.synth_id;
+        opt.textContent = `${s.name} (${s.synth_id})`;
+        select.appendChild(opt);
+      }
+    }
+
+    async function uploadArtifact() {
+      try {
+        requireEnv();
+        const file = document.getElementById("artifactFile").files[0];
+        if (!file) throw new Error("Choose a file first");
+        const form = new FormData();
+        form.append("file", file);
+        form.append("artifact_type", document.getElementById("artifactType").value);
+        form.append("title", document.getElementById("artifactTitle").value || file.name);
+        const data = await api(`/api/simulations/${envId}/artifacts/upload`, "POST", form, true);
+        setText("artifactStatus", `Uploaded: ${data.title} (${data.artifact_id})`);
+        await refreshEvents();
+      } catch (e) {
+        setText("artifactStatus", `Error: ${e.message}`);
+      }
+    }
+
+    async function runOneRound() {
+      try {
+        requireEnv();
+        await api(`/api/simulations/${envId}/rounds/one`, "POST");
+        await refreshStats();
+        await refreshEvents();
+        await refreshTraces();
+      } catch (e) {
+        setText("stats", `Error: ${e.message}`);
+      }
+    }
+
+    async function runManyRounds() {
+      try {
+        requireEnv();
+        const rounds = parseInt(document.getElementById("roundsN").value || "3", 10);
+        await api(`/api/simulations/${envId}/rounds/many`, "POST", { rounds });
+        await refreshStats();
+        await refreshEvents();
+        await refreshTraces();
+      } catch (e) {
+        setText("stats", `Error: ${e.message}`);
+      }
+    }
+
+    async function chatSynth() {
+      try {
+        requireEnv();
+        const synthId = document.getElementById("chatSynth").value;
+        const text = document.getElementById("chatText").value.trim();
+        const data = await api(`/api/simulations/${envId}/chat/${synthId}`, "POST", { text });
+        setText("chatResult", JSON.stringify(data, null, 2));
+        await refreshEvents();
+      } catch (e) {
+        setText("chatResult", `Error: ${e.message}`);
+      }
+    }
+
+    async function askGod() {
+      try {
+        requireEnv();
+        const question = document.getElementById("godQuestion").value.trim();
+        const data = await api(`/api/simulations/${envId}/god`, "POST", { question });
+        setText("godAnswer", data.answer);
+      } catch (e) {
+        setText("godAnswer", `Error: ${e.message}`);
+      }
+    }
+
+    async function refreshStats() {
+      try {
+        requireEnv();
+        const data = await api(`/api/simulations/${envId}/stats`);
+        setText("stats", JSON.stringify(data.stats, null, 2));
+      } catch (e) {
+        setText("stats", `Error: ${e.message}`);
+      }
+    }
+
+    async function refreshEvents() {
+      try {
+        requireEnv();
+        const data = await api(`/api/simulations/${envId}/events?since=${eventOffset}`);
+        eventOffset = data.next_offset;
+        const prev = document.getElementById("events").textContent;
+        const append = data.events.map(e => JSON.stringify(e)).join("\n");
+        setText("events", [prev, append].filter(Boolean).join("\n"));
+      } catch (e) {
+        setText("events", `Error: ${e.message}`);
+      }
+    }
+
+    async function refreshTraces() {
+      try {
+        requireEnv();
+        const data = await api(`/api/simulations/${envId}/traces?limit=80`);
+        setText("traces", data.traces.map(t => JSON.stringify(t)).join("\n"));
+      } catch (e) {
+        setText("traces", `Error: ${e.message}`);
+      }
+    }
+  </script>
+</body>
+</html>

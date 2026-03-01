@@ -10,10 +10,11 @@ the transcript or ask GOD-mode analysis questions.
 - Multi-synth simulation loop with event logs and transcript stats.
 - Persona bootstrapping and long-term memory via Supermemory.
 - Tool-calling inside synth turns (OpenAI function calling format).
-- Artifact ingestion from pasted text or local files.
+- Artifact ingestion from pasted text, `.txt/.md`, and `.pdf` uploads.
 - Post-run GOD mode for transcript-level analysis.
 - Snapshot save/load for replaying prior runs.
 - Real-time observability stream with JSONL trace logs.
+- Local FastAPI backend with minimal web UI demo.
 
 ## Quick Start
 
@@ -23,12 +24,33 @@ the transcript or ask GOD-mode analysis questions.
 3. Create `.env` with:
    - `OPENAI_API_KEY=...`
    - `SUPERMEMORY_API_KEY=...`
-4. Run:
+4. Run CLI:
    - `python main.py`
 
 At startup you can:
 - load a previous run snapshot, or
 - start a new run and optionally attach artifacts.
+
+## Local Web Demo (Hackathon Path)
+
+Run backend:
+
+- `uvicorn api.server:app --reload --host 127.0.0.1 --port 8000`
+
+Open browser:
+
+- `http://127.0.0.1:8000/`
+
+Web demo supports:
+
+- simulation creation (task + synth personas)
+- artifact upload (`.txt/.md/.pdf`)
+- run one or many rounds
+- direct user-to-synth chat
+- GOD analysis query
+- transcript/events/traces panel
+
+For offline demo mode (no OpenAI/Supermemory), create simulation with **mock mode enabled** in UI.
 
 ## Artifact Ingestion (MVP)
 
@@ -46,10 +68,12 @@ Supported artifact types:
 ## Useful Scripts
 
 - `python main.py` — main demo flow
+- `uvicorn api.server:app --reload` — local API + web UI
 - `python environment/test_integration.py` — environment smoke test (mock synths)
 - `python environment/test_chat_integration.py` — routing smoke test
 - `python synth/test/test_single_synth.py` — direct single-synth interactive test
 - `python synth/test/test_multi_synth.py` — threaded group chat test
+- `python api/test_api_smoke.py` — API smoke test (mock mode)
 
 ## Snapshot Replay
 
@@ -62,6 +86,7 @@ At startup:
 ## Observability
 
 Running `python main.py` now enables live trace output by default.
+Running via API/web also writes trace output per simulation.
 
 - Console stream: `[trace][EVENT_TYPE][actor] summary`
 - Structured trace file: `runs/traces/<env_id>.jsonl`
@@ -72,3 +97,13 @@ Trace events include:
 - tool flow (`SYNTH_TOOL_INTENT`, `ENV_TOOL_EXECUTION_START`, `ENV_TOOL_EXECUTION_RESULT`)
 - transcript writes (`ENV_EVENT_LOGGED`)
 - routing and skip signals (`ENV_REPLY_BLOCKED`, `SYNTH_SKIP`)
+- grounding checks (`SYNTH_GROUNDING_CHECK`)
+
+## Demo Checklist
+
+1. Start API/web (`uvicorn api.server:app --reload`).
+2. Create simulation with 3 synths and clear personas.
+3. Upload one `.txt`, one `.md`, and one `.pdf` artifact.
+4. Run 2-3 rounds and verify synth outputs include `[source: ...]` or `[uncertain: ...]`.
+5. Ask GOD for top action items and groundedness score.
+6. Show transcript + trace stream panel.

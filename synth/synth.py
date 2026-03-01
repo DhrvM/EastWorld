@@ -255,6 +255,23 @@ class Synth:
                 )
                 return StepResult(skip=True)
 
+            text, grounded = _ensure_grounding_marker(text, objective)
+            _emit_observation(
+                observer,
+                "SYNTH_GROUNDING_CHECK",
+                {
+                    "synth_id": self.synth_id,
+                    "grounded": grounded,
+                    "has_source_marker": "[source:" in text.lower(),
+                    "has_uncertainty_marker": "[uncertain:" in text.lower(),
+                    "summary": (
+                        "grounding markers present"
+                        if grounded
+                        else "grounding marker auto-added"
+                    ),
+                },
+            )
+
             # Memory ingestion
             store_memory(
                 self.synth_id,
@@ -370,6 +387,36 @@ def _safe_json_parse(s: str) -> dict:
         return json.loads(s)
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def _extract_artifact_titles(objective: str | None) -> list[str]:
+    if not objective:
+        return []
+    titles: list[str] = []
+    for line in objective.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("- title:"):
+            title = stripped.split(":", 1)[1].strip()
+            if title:
+                titles.append(title)
+    return titles
+
+
+def _has_grounding_marker(text: str) -> bool:
+    lowered = text.lower()
+    return "[source:" in lowered or "[uncertain:" in lowered
+
+
+def _ensure_grounding_marker(text: str, objective: str | None) -> tuple[str, bool]:
+    artifact_titles = _extract_artifact_titles(objective)
+    if not artifact_titles:
+        return text, True
+    if _has_grounding_marker(text):
+        return text, True
+    # If artifacts exist but the model forgot citation/uncertainty markers,
+    # append a safe uncertainty marker rather than fabricating evidence.
+    amended = text.rstrip() + " [uncertain: no explicit artifact citation in response]"
+    return amended, False
 
 
 def _emit_observation(

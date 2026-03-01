@@ -10,6 +10,7 @@ Usage:
 import sys
 import os
 import json
+import re
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -28,199 +29,8 @@ from environment.main import Environment
 from god import God
 
 
-# ── Personas ─────────────────────────────────────────────────────────────────
-
-PERSONAS = [
-    SynthConfig(
-        synth_id="Maya-CEO",
-        synth_name="Maya",
-        persona_prompt=(
-            "You are Maya, a 32-year-old CEO of a fintech startup called PayFlow. "
-            "You're building a payment orchestration platform and need to ship fast. "
-            "You're pragmatic, metrics-driven, and always evaluating new developer tools. "
-            "You recently discovered API X (a payment orchestration API) and have been "
-            "testing it. You're impressed by its speed and multi-provider routing. "
-            "You speak directly, value efficiency, and love sharing useful tools with "
-            "other founders. You're data-oriented and back claims with numbers."
-        ),
-        allowed_connections=["Jake-CTO", "Priya-CEO", "Leo-CEO", "Sam-CEO"],
-        allowed_tools=["api_x"],  # Maya starts with API X access
-    ),
-    SynthConfig(
-        synth_id="Jake-CTO",
-        synth_name="Jake",
-        persona_prompt=(
-            "You are Jake, a 29-year-old CTO of an edtech startup called LearnLoop. "
-            "You're skeptical of third-party APIs — you've been burned before by vendor "
-            "lock-in and unexpected pricing changes. You prefer building in-house when "
-            "possible. To convince you, someone needs to show you benchmarks, reliability "
-            "data, and a clean developer experience. You're technically sharp, ask probing "
-            "questions about architecture, and respect honest technical assessments. "
-            "You're currently struggling with payment integration for your course marketplace."
-        ),
-        allowed_connections=["Maya-CEO", "Priya-CEO", "Leo-CEO", "Sam-CEO"],
-        allowed_tools=[],  # No API X access initially
-    ),
-    SynthConfig(
-        synth_id="Priya-CEO",
-        synth_name="Priya",
-        persona_prompt=(
-            "You are Priya, a 35-year-old CEO of a healthtech startup called MedSecure. "
-            "You're laser-focused on compliance (HIPAA, SOC2, GDPR). Every tool you evaluate "
-            "must pass your compliance checklist. You're methodical, detail-oriented, and "
-            "cautious about adopting new tools without proper security documentation. "
-            "You're building a patient billing system and need a payment solution, "
-            "but it must be PCI DSS Level 1 compliant. You ask about security certifications "
-            "before anything else."
-        ),
-        allowed_connections=["Maya-CEO", "Jake-CTO", "Leo-CEO", "Sam-CEO"],
-        allowed_tools=[],
-    ),
-    SynthConfig(
-        synth_id="Leo-CEO",
-        synth_name="Leo",
-        persona_prompt=(
-            "You are Leo, a 26-year-old founder of a social commerce startup called BuzzMarket. "
-            "You're a growth hacker at heart — always looking for tools that move fast and "
-            "scale. You love trying new APIs and integrating them in a weekend. You're "
-            "enthusiastic, move quickly, and care most about developer experience and time-to-"
-            "integration. You don't overthink compliance — speed is king. You're building "
-            "an in-app marketplace with payments and need a solution ASAP."
-        ),
-        allowed_connections=["Maya-CEO", "Jake-CTO", "Priya-CEO", "Sam-CEO"],
-        allowed_tools=[],
-    ),
-    SynthConfig(
-        synth_id="Sam-CEO",
-        synth_name="Sam",
-        persona_prompt=(
-            "You are Sam, a 38-year-old founder of a B2B SaaS startup called DevDash. "
-            "You build developer tooling and have strong opinions about API design. "
-            "You evaluate tools through the lens of DX (developer experience): is the "
-            "documentation good? Are the error messages clear? Is the SDK idiomatic? "
-            "You're building a billing/subscription management feature and need payment "
-            "infrastructure. You're thoughtful, mentor-ish, and often help other founders "
-            "think through technical decisions."
-        ),
-        allowed_connections=["Maya-CEO", "Jake-CTO", "Priya-CEO", "Leo-CEO"],
-        allowed_tools=[],
-    ),
-]
-
-
 # ── Tool Definitions ─────────────────────────────────────────────────────────
-
-def api_x_tool(action: str = "get_docs", endpoint: str = "") -> dict:
-    """Simulated API X tool with realistic responses."""
-    responses = {
-        "get_docs": {
-            "name": "API X — Payment Orchestration",
-            "version": "2.1.0",
-            "description": (
-                "A modern payment orchestration API with multi-provider "
-                "routing, automatic failover, and smart retries."
-            ),
-            "key_features": [
-                "Multi-PSP routing (Stripe, Adyen, Braintree, PayPal)",
-                "Automatic failover with <100ms switching",
-                "Smart retry with exponential backoff",
-                "PCI DSS Level 1 compliant",
-                "SOC 2 Type II certified",
-                "HIPAA BAA available on Enterprise plan",
-                "Webhook management and event streaming",
-                "Built-in analytics and conversion tracking",
-                "SDKs: Python, Node, Go, Ruby, Java",
-            ],
-            "supported_currencies": 135,
-            "uptime_sla": "99.99%",
-            "avg_latency_ms": 45,
-            "p99_latency_ms": 120,
-        },
-        "test_endpoint": {
-            "status": "success",
-            "endpoint": endpoint or "/v1/payments",
-            "response_time_ms": 38,
-            "result": {
-                "payment_id": "pay_abc123xyz",
-                "status": "completed",
-                "amount": 4999,
-                "currency": "USD",
-                "provider": "stripe",
-                "failover_triggered": False,
-                "retry_count": 0,
-            },
-        },
-        "get_pricing": {
-            "plans": [
-                {
-                    "name": "Startup",
-                    "price": "$49/mo",
-                    "transactions": "10,000/mo",
-                    "features": ["2 PSPs", "Basic routing", "Email support"],
-                },
-                {
-                    "name": "Growth",
-                    "price": "$199/mo",
-                    "transactions": "100,000/mo",
-                    "features": [
-                        "All PSPs", "Smart routing", "Priority support",
-                        "Analytics dashboard",
-                    ],
-                },
-                {
-                    "name": "Enterprise",
-                    "price": "Custom",
-                    "transactions": "Unlimited",
-                    "features": [
-                        "All Growth features", "HIPAA BAA", "Dedicated CSM",
-                        "Custom SLA", "On-premise option",
-                    ],
-                },
-            ],
-        },
-        "check_compliance": {
-            "certifications": [
-                "PCI DSS Level 1",
-                "SOC 2 Type II",
-                "ISO 27001",
-                "GDPR compliant (EU data residency available)",
-            ],
-            "hipaa": "Available on Enterprise plan with signed BAA",
-            "data_residency": ["US", "EU", "APAC"],
-            "encryption": "AES-256 at rest, TLS 1.3 in transit",
-            "audit_logs": "Full audit trail, 7-year retention",
-        },
-    }
-    return responses.get(action, {"error": f"Unknown action: {action}"})
-
-
-TOOL_DEFINITIONS = [
-    {
-        "name": "api_x",
-        "description": (
-            "API X — A payment orchestration API. Use this to explore "
-            "and test the API. Actions: 'get_docs' (see features & capabilities), "
-            "'test_endpoint' (test a specific endpoint), 'get_pricing' "
-            "(see pricing plans), 'check_compliance' (see security certifications)."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["get_docs", "test_endpoint", "get_pricing", "check_compliance"],
-                    "description": "Action to perform",
-                },
-                "endpoint": {
-                    "type": "string",
-                    "description": "Specific endpoint to test (for test_endpoint action)",
-                },
-            },
-            "required": ["action"],
-        },
-        "function": api_x_tool,
-    },
-]
+TOOL_DEFINITIONS: list[dict] = []
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -241,17 +51,11 @@ def run_demo():
         _replay_snapshot_mode(replay_path)
         return
 
-    # ── 1. Create Environment ─────────────────────────────────────────
-    objective = (
-        "You are five startup founders sharing a co-working space. "
-        "Each of you is building a product that needs payment infrastructure. "
-        "Chat naturally — share what you're working on, what tools you're using, "
-        "ask each other for advice. Maya has been testing a new API called 'API X' "
-        "and may share her experience. Be yourselves — agree, disagree, ask questions, "
-        "be skeptical or enthusiastic based on your personality."
-    )
+    synth_configs = _collect_synth_configs()
+    objective = _collect_task_objective()
 
-    env = Environment(objective=objective, max_turns=50)
+    # ── 1. Create Environment ─────────────────────────────────────────
+    env = Environment(objective=objective, max_turns=1000)
     observer = _setup_observability(env.id)
     env.set_observer(observer.emit)
     user_artifacts = _collect_user_artifacts()
@@ -267,27 +71,11 @@ def run_demo():
             function=tool_def["function"],
         )
 
-    # Register the recommend_tool system tool
-    env.register_tool(
-        name="recommend_tool",
-        description="Share a tool with another person so they get access to it.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "tool_name": {"type": "string", "description": "Tool to share"},
-                "target_synth_id": {"type": "string", "description": "Person to share with"},
-                "reason": {"type": "string", "description": "Why you're sharing"},
-            },
-            "required": ["tool_name", "target_synth_id", "reason"],
-        },
-        function=lambda **kwargs: {"status": "ok"},
-    )
-
     # ── 2. Bootstrap & Register Synths ─────────────────────────────────
     print("📡 Bootstrapping synths (seeding personas into memory)...\n")
     synths_by_name: dict[str, Synth] = {}
-    for i, config in enumerate(PERSONAS, 1):
-        print(f"  [{i}/{len(PERSONAS)}] {config.synth_name}...", end=" ", flush=True)
+    for i, config in enumerate(synth_configs, 1):
+        print(f"  [{i}/{len(synth_configs)}] {config.synth_name}...", end=" ", flush=True)
         synth = Synth(config, bootstrap=True)
         env.add_synth(synth)
         for artifact in user_artifacts:
@@ -295,12 +83,13 @@ def run_demo():
         synths_by_name[config.synth_name.lower()] = synth
         print("✓")
 
-    print(f"\n✅ {len(PERSONAS)} synths ready. Environment ID: {env.id[:8]}...")
+    print(f"\n✅ {len(synth_configs)} synths ready. Environment ID: {env.id[:8]}...")
+    print(f"\n🎯 Task:\n{objective}\n")
 
-    # ── 3. Run Simulation ──────────────────────────────────────────────
-    sim_rounds = 6
+    # ── 3. Interactive Simulation Control ──────────────────────────────
     print(f"\n{'─' * 60}")
-    print(f"  🚀 Running simulation ({sim_rounds} rounds)")
+    print("  🚀 Interactive simulation started")
+    print("  Run as many rounds as you want; use menu anytime.")
     print(f"{'─' * 60}\n")
 
     def on_message(sender: str, text: str):
@@ -310,45 +99,70 @@ def run_demo():
             name = env.synths[sender].synth_name if sender in env.synths else sender
             print(f"  {name}: {text}\n")
 
-    env.run_simulation(rounds=sim_rounds, callback=on_message)
-
-    # ── 4. Post-Simulation Summary ─────────────────────────────────────
-    stats = env.get_stats()
-    print(f"\n{'─' * 60}")
-    print(f"  📊 Simulation Complete")
-    print(f"{'─' * 60}")
-    print(f"  Rounds: {stats['rounds']} | Messages: {stats['messages']} | "
-          f"Tool calls: {stats['tool_calls']} | Tools shared: {stats['tool_shares']}")
-    print(f"  Artifacts ingested: {stats['artifacts_ingested']}")
-    print(f"  Messages per synth: {stats['messages_per_synth']}")
-
-    # ── 5. Interactive Post-Sim Menu ───────────────────────────────────
     god = God(env)
-
     print(f"\n{'=' * 60}")
-    print("  🎮 Post-Simulation Menu")
+    print("  🎮 Simulation Control Menu")
     print("=" * 60)
 
     while True:
-        print("\n  1. 🔮 GOD Mode (ask anything about the simulation)")
-        print("  2. 💬 Talk to a specific synth")
-        print("  3. 📜 View full transcript")
-        print("  4. 💾 Save run snapshot")
-        print("  5. 🚪 Exit\n")
+        print("\n  1. ▶️ Run one round")
+        print("  2. ⏩ Run N rounds")
+        print("  3. 🔮 GOD Mode (mid-simulation)")
+        print("  4. 💬 Talk to a specific synth (mid-simulation)")
+        print("  5. 📥 Add artifact")
+        print("  6. 📊 View stats")
+        print("  7. 📜 View full transcript")
+        print("  8. 💾 Save run snapshot")
+        print("  9. ✅ End simulation and exit\n")
 
-        choice = input("  Choose [1-5]: ").strip()
+        choice = input("  Choose [1-9]: ").strip()
 
         if choice == "1":
-            _god_mode(god)
+            had_activity = env.run_round(callback=on_message)
+            if not had_activity:
+                print("  [system] No synths responded this round.")
         elif choice == "2":
-            _direct_chat(synths_by_name, env)
+            rounds = _prompt_positive_int("  Run how many rounds? ", default=3)
+            for _ in range(rounds):
+                had_activity = env.run_round(callback=on_message)
+                if not had_activity:
+                    print("  [system] No synths responded; stopping early.")
+                    break
         elif choice == "3":
+            _god_mode(god)
+        elif choice == "4":
+            _direct_chat(synths_by_name, env)
+        elif choice == "5":
+            new_artifacts = _collect_user_artifacts()
+            if new_artifacts:
+                env.add_artifacts(new_artifacts)
+                for synth in env.synths.values():
+                    for artifact in new_artifacts:
+                        store_memory(synth.synth_id, artifact_to_memory_blob(artifact))
+        elif choice == "6":
+            stats = env.get_stats()
+            print(f"\n{'─' * 60}")
+            print(f"  📊 Live Simulation Stats")
+            print(f"{'─' * 60}")
+            print(f"  Rounds: {stats['rounds']} | Messages: {stats['messages']} | "
+                  f"Tool calls: {stats['tool_calls']} | Tools shared: {stats['tool_shares']}")
+            print(f"  Artifacts ingested: {stats['artifacts_ingested']}")
+            print(f"  Messages per synth: {stats['messages_per_synth']}")
+        elif choice == "7":
             print(f"\n{'─' * 40}")
             print(env.get_transcript())
             print(f"{'─' * 40}")
-        elif choice == "4":
+        elif choice == "8":
             _save_snapshot_prompt(env)
-        elif choice == "5":
+        elif choice == "9":
+            env.finish()
+            stats = env.get_stats()
+            print(f"\n{'─' * 60}")
+            print(f"  📊 Final Simulation Summary")
+            print(f"{'─' * 60}")
+            print(f"  Rounds: {stats['rounds']} | Messages: {stats['messages']} | "
+                  f"Tool calls: {stats['tool_calls']} | Tools shared: {stats['tool_shares']}")
+            print(f"  Artifacts ingested: {stats['artifacts_ingested']}")
             print("\n  👋 Goodbye!\n")
             break
         else:
@@ -424,6 +238,54 @@ def _direct_chat(synths_by_name: dict, env: Environment):
             print(f"\n  {synth.synth_name}: (no response)\n")
 
 
+def _collect_synth_configs() -> list[SynthConfig]:
+    print("🧬 Define your synth roster.")
+    synth_count = _prompt_positive_int("  How many synths do you want? ", default=3)
+
+    entries: list[tuple[str, str]] = []
+    for i in range(1, synth_count + 1):
+        print(f"\n  Synth {i}/{synth_count}")
+        name = input("  Name: ").strip() or f"Synth{i}"
+        persona = _prompt_multiline(
+            "  Persona prompt (end with a line containing only 'END'):"
+        ).strip()
+        if not persona:
+            persona = (
+                f"You are {name}, a thoughtful synthetic user. You discuss the task "
+                "naturally, ask questions, and provide specific opinions."
+            )
+        entries.append((name, persona))
+
+    synth_ids: list[str] = []
+    configs: list[SynthConfig] = []
+    for idx, (name, persona) in enumerate(entries, 1):
+        synth_id = _make_synth_id(name, idx, set(synth_ids))
+        synth_ids.append(synth_id)
+        configs.append(
+            SynthConfig(
+                synth_id=synth_id,
+                synth_name=name,
+                persona_prompt=persona,
+                allowed_connections=[],
+                allowed_tools=[],
+            )
+        )
+
+    # Full-mesh by default so every synth can reply to every other synth.
+    for cfg in configs:
+        cfg.allowed_connections = [sid for sid in synth_ids if sid != cfg.synth_id]
+    return configs
+
+
+def _collect_task_objective() -> str:
+    print("\n📝 Define what synths should discuss.")
+    print("   Enter the task/objective. End with a line containing only 'END'.")
+    task = _prompt_multiline("  Task: ").strip()
+    if not task:
+        task = "Discuss the provided artifacts and derive actionable feedback."
+    return task
+
+
 def _collect_user_artifacts() -> list[Artifact]:
     """Collect optional user artifacts for the simulation."""
     print("📥 Optional: attach user artifacts (emails/docs/product ideas).")
@@ -481,6 +343,43 @@ def _prompt_single_artifact(mode: str) -> Artifact | None:
     except OSError as exc:
         print(f"  File read error: {exc}")
     return None
+
+
+def _prompt_multiline(prompt: str) -> str:
+    print(prompt)
+    lines: list[str] = []
+    while True:
+        line = input()
+        if line.strip() == "END":
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _make_synth_id(name: str, index: int, existing: set[str]) -> str:
+    base = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_")
+    if not base:
+        base = f"Synth_{index}"
+    candidate = base
+    suffix = 2
+    while candidate in existing:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _prompt_positive_int(prompt: str, default: int = 1) -> int:
+    while True:
+        raw = input(prompt).strip()
+        if not raw:
+            return default
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+        print("  Please enter a positive integer.")
 
 
 def _save_snapshot_prompt(env: Environment) -> None:

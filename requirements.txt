@@ -1,3 +1,7 @@
 openai
 supermemory
 python-dotenv
+fastapi
+uvicorn
+python-multipart
+pypdf

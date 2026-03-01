@@ -6,6 +6,7 @@ from .ingest import (
     ingest_artifact_from_file,
     ingest_artifact_from_text,
 )
+from .upload import ingest_uploaded_artifact
 
 __all__ = [
     "Artifact",
@@ -14,4 +15,5 @@ __all__ = [
     "artifact_to_memory_blob",
     "ingest_artifact_from_file",
     "ingest_artifact_from_text",
+    "ingest_uploaded_artifact",
 ]

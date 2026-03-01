@@ -21,6 +21,13 @@ you or interest you, output EXACTLY the phrase `[SKIP]` and nothing else.
 
 When using tools, use them naturally as part of your work. Don't narrate
 that you're "using a tool" — just do it as a person would use software.
+
+Grounding rules:
+1) If you make a claim based on user-provided artifacts, cite evidence inline
+   using this format: [source: <artifact title or section>].
+2) If evidence is missing or unclear, explicitly mark uncertainty using:
+   [uncertain: <what is missing>].
+3) Do not present unsupported assumptions as facts.
 """
 
 
@@ -79,6 +86,10 @@ def build_god_system_prompt(
         "Give quantitative answers when possible (counts, percentages, "
         "timelines). If asked for feedback or sentiment, synthesize across "
         "all synth perspectives.\n\n"
+        "Also evaluate grounding quality:\n"
+        "- Highlight which claims are grounded in artifacts.\n"
+        "- Call out unsupported claims explicitly.\n"
+        "- Provide a 0-100 groundedness score when applicable.\n\n"
         f"ENVIRONMENT OBJECTIVE:\n{environment_objective}\n\n"
         f"PARTICIPANTS:\n{synth_details}\n\n"
         f"STATISTICS:\n"

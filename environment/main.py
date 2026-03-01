@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -38,6 +38,7 @@ class Environment:
         self.conversation: list[SynthMessage] = [] # shared message history
         self.artifacts: list[Artifact] = []        # user-provided context artifacts
         self.observer = observer
+        self._opened = False
 
     def set_observer(self, observer: Callable[[str, dict], None] | None) -> None:
         self.observer = observer
@@ -170,19 +171,110 @@ class Environment:
             ``(sender_id, text) -> None`` called for each message, useful for
             live printing.
         """
-        self.status = "RUNNING"
         max_rounds = rounds or self.max_turns
+        self._ensure_running()
+        for _ in range(max_rounds):
+            if self.status == "TERMINATED":
+                break
+            had_activity = self.run_round(callback=callback)
+            if not had_activity:
+                if callback:
+                    callback("system", "[Conversation naturally concluded — all synths skipped]")
+                self._observe(
+                    "ENV_CONVERSATION_CONCLUDED",
+                    {
+                        "env_id": self.id,
+                        "round": self.current_turn,
+                        "summary": "all synths skipped, ending run",
+                    },
+                )
+                break
+        self.finish()
+
+    def run_round(
+        self,
+        callback: Callable[[str, str], None] | None = None,
+    ) -> bool:
+        """Run exactly one round over all synths."""
+        self._ensure_running()
+        if self.status == "TERMINATED":
+            return False
+
+        self._seed_and_open_if_needed(callback=callback)
+        synth_list = list(self.synths.values())
+        if not synth_list:
+            return False
+
+        round_num = self.current_turn + 1
         self._observe(
-            "ENV_RUN_START",
+            "ENV_ROUND_START",
             {
                 "env_id": self.id,
-                "max_rounds": max_rounds,
-                "synth_count": len(self.synths),
-                "summary": f"simulation starting with {len(self.synths)} synths",
+                "round": round_num,
+                "conversation_len": len(self.conversation),
+                "summary": f"round {round_num} start",
             },
         )
 
-        # Build participant context to inject into objective
+        round_had_activity = False
+        objective = self._build_full_objective()
+        for synth in synth_list:
+            if self.conversation and self.conversation[-1].name == synth.synth_id:
+                continue
+            if not self._can_synth_reply(synth):
+                continue
+            try:
+                msg = self._run_synth_turn(synth, objective)
+                if msg:
+                    round_had_activity = True
+                    if callback:
+                        callback(synth.synth_id, msg.content)
+            except Exception as e:
+                err = f"[ERROR] {synth.synth_id}: {e}"
+                self._log(synth.synth_id, "ERROR", {"error": str(e)})
+                if callback:
+                    callback("system", err)
+
+        self.current_turn = round_num
+        self._observe(
+            "ENV_ROUND_END",
+            {
+                "env_id": self.id,
+                "round": round_num,
+                "had_activity": round_had_activity,
+                "conversation_len": len(self.conversation),
+                "summary": f"round {round_num} end",
+            },
+        )
+        return round_had_activity
+
+    def finish(self) -> None:
+        """Mark run as completed."""
+        self.status = "COMPLETED"
+        self._observe(
+            "ENV_RUN_END",
+            {
+                "env_id": self.id,
+                "rounds_completed": self.current_turn,
+                "total_events": len(self.event_logs),
+                "summary": "simulation completed",
+            },
+        )
+
+    def _ensure_running(self) -> None:
+        if self.status == "INITIALIZING":
+            self.status = "RUNNING"
+            self._observe(
+                "ENV_RUN_START",
+                {
+                    "env_id": self.id,
+                    "max_rounds": self.max_turns,
+                    "synth_count": len(self.synths),
+                    "summary": f"simulation starting with {len(self.synths)} synths",
+                },
+            )
+
+    def _build_full_objective(self) -> str:
         participant_info = "\n".join(
             f"- {s.synth_name} ({s.synth_id}): {s.persona_prompt[:150]}..."
             for s in self.synths.values()
@@ -199,101 +291,39 @@ class Environment:
                 f"{artifact_context}\n"
                 "Use these artifacts as primary evidence in your discussion."
             )
+        return full_objective
 
-        # Seed the conversation with the objective
+    def _seed_and_open_if_needed(
+        self,
+        callback: Callable[[str, str], None] | None = None,
+    ) -> None:
         if not self.conversation:
-            self.conversation.append(SynthMessage(
-                role="system",
-                content=f"[ENVIRONMENT]: {self.objective}",
-                name="system",
-            ))
-
-        synth_list = list(self.synths.values())
-
-        # Let the first synth kick things off
-        if synth_list and len(self.conversation) <= 1:
-            opener = synth_list[0]
-            try:
-                opening = self._call_synth_initiate(opener)
-                self.conversation.append(opening)
-                self._log(opener.synth_id, "MESSAGE", {"text": opening.content})
-                if callback:
-                    callback(opener.synth_id, opening.content)
-            except Exception as e:
-                self._log(opener.synth_id, "ERROR", {"error": str(e)})
-
-        # ── Main loop ────────────────────────────────────────────────
-        for round_num in range(max_rounds):
-            if self.status == "TERMINATED":
-                break
-            self._observe(
-                "ENV_ROUND_START",
-                {
-                    "env_id": self.id,
-                    "round": round_num + 1,
-                    "conversation_len": len(self.conversation),
-                    "summary": f"round {round_num + 1} start",
-                },
-            )
-
-            round_had_activity = False
-
-            for synth in synth_list:
-                # Don't respond to yourself
-                if (self.conversation
-                        and self.conversation[-1].name == synth.synth_id):
-                    continue
-                if not self._can_synth_reply(synth):
-                    continue
-
-                try:
-                    msg = self._run_synth_turn(synth, full_objective)
-                    if msg:
-                        round_had_activity = True
-                        if callback:
-                            callback(synth.synth_id, msg.content)
-                except Exception as e:
-                    err = f"[ERROR] {synth.synth_id}: {e}"
-                    self._log(synth.synth_id, "ERROR", {"error": str(e)})
-                    if callback:
-                        callback("system", err)
-
-            self.current_turn = round_num + 1
-            self._observe(
-                "ENV_ROUND_END",
-                {
-                    "env_id": self.id,
-                    "round": round_num + 1,
-                    "had_activity": round_had_activity,
-                    "conversation_len": len(self.conversation),
-                    "summary": f"round {round_num + 1} end",
-                },
-            )
-
-            # If nobody talked this round, the conversation naturally ended
-            if not round_had_activity:
-                if callback:
-                    callback("system", "[Conversation naturally concluded — all synths skipped]")
-                self._observe(
-                    "ENV_CONVERSATION_CONCLUDED",
-                    {
-                        "env_id": self.id,
-                        "round": round_num + 1,
-                        "summary": "all synths skipped, ending run",
-                    },
+            self.conversation.append(
+                SynthMessage(
+                    role="system",
+                    content=f"[ENVIRONMENT]: {self.objective}",
+                    name="system",
                 )
-                break
+            )
 
-        self.status = "COMPLETED"
-        self._observe(
-            "ENV_RUN_END",
-            {
-                "env_id": self.id,
-                "rounds_completed": self.current_turn,
-                "total_events": len(self.event_logs),
-                "summary": "simulation completed",
-            },
-        )
+        if self._opened:
+            return
+        synth_list = list(self.synths.values())
+        if not synth_list or len(self.conversation) > 1:
+            self._opened = True
+            return
+
+        opener = synth_list[0]
+        try:
+            opening = self._call_synth_initiate(opener)
+            self.conversation.append(opening)
+            self._log(opener.synth_id, "MESSAGE", {"text": opening.content})
+            if callback:
+                callback(opener.synth_id, opening.content)
+        except Exception as e:
+            self._log(opener.synth_id, "ERROR", {"error": str(e)})
+        finally:
+            self._opened = True
 
     def _can_synth_reply(self, synth: Any) -> bool:
         """Check whether synth is allowed to respond based on last speaker."""
@@ -486,7 +516,7 @@ class Environment:
             "actor_id": actor_id,
             "event_type": event_type,
             "payload": payload,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         self.event_logs.append(event)
         self._observe(
