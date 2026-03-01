@@ -17,13 +17,20 @@ from api.session_store import SessionStore
 from synth import SynthConfig
 
 
+class EnvironmentInput(BaseModel):
+    objective: str = Field(min_length=1)
+    active_tools: list[str] = Field(default_factory=list)
+
+
 class SynthInput(BaseModel):
-    name: str = Field(min_length=1)
-    persona: str = Field(min_length=1)
+    synth_id: str = Field(min_length=1)
+    persona_prompt: str = Field(min_length=1)
+    allowed_connections: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] = Field(default_factory=list)
 
 
 class CreateSimulationRequest(BaseModel):
-    task: str = Field(min_length=1)
+    environment: EnvironmentInput
     synths: list[SynthInput] = Field(min_length=1)
     bootstrap_synths: bool = True
     mock_mode: bool = False
@@ -69,38 +76,18 @@ if web_dir.exists():
     app.mount("/web", StaticFiles(directory=str(web_dir), html=True), name="web")
 
 
-def _make_synth_id(name: str, index: int, existing: set[str]) -> str:
-    import re
-
-    base = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_")
-    if not base:
-        base = f"Synth_{index}"
-    candidate = base
-    suffix = 2
-    while candidate in existing:
-        candidate = f"{base}_{suffix}"
-        suffix += 1
-    return candidate
-
-
-def _build_full_mesh_configs(synths: list[SynthInput]) -> list[SynthConfig]:
-    synth_ids: list[str] = []
+def _build_configs_from_input(synths: list[SynthInput]) -> list[SynthConfig]:
     configs: list[SynthConfig] = []
-
-    for idx, s in enumerate(synths, 1):
-        synth_id = _make_synth_id(s.name, idx, set(synth_ids))
-        synth_ids.append(synth_id)
+    for s in synths:
         configs.append(
             SynthConfig(
-                synth_id=synth_id,
-                synth_name=s.name,
-                persona_prompt=s.persona,
-                allowed_connections=[],
-                allowed_tools=[],
+                synth_id=s.synth_id,
+                synth_name=s.synth_id,
+                persona_prompt=s.persona_prompt,
+                allowed_connections=s.allowed_connections,
+                allowed_tools=s.allowed_tools,
             )
         )
-    for cfg in configs:
-        cfg.allowed_connections = [sid for sid in synth_ids if sid != cfg.synth_id]
     return configs
 
 
@@ -119,9 +106,10 @@ def health() -> dict:
 
 @app.post("/api/simulations", response_model=CreateSimulationResponse)
 def create_simulation(payload: CreateSimulationRequest) -> CreateSimulationResponse:
-    synth_configs = _build_full_mesh_configs(payload.synths)
+    synth_configs = _build_configs_from_input(payload.synths)
     session = store.create_session(
-        objective=payload.task,
+        objective=payload.environment.objective,
+        active_tools=payload.environment.active_tools,
         synth_configs=synth_configs,
         bootstrap_synths=payload.bootstrap_synths,
         mock_mode=payload.mock_mode,
