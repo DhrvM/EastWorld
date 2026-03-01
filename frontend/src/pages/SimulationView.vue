@@ -15,6 +15,16 @@
       </div>
       <div>
         <q-btn 
+          color="positive" 
+          outline 
+          icon="play_arrow" 
+          :label="isAutoPlay ? 'Pause' : 'Auto Play'" 
+          class="q-mr-sm" 
+          @click="toggleAutoPlay" 
+          :class="{ 'bg-positive text-white': isAutoPlay }"
+        />
+        <q-btn color="secondary" outline icon="skip_next" label="Next Round" class="q-mr-sm" @click="runOneRound" :disable="isAutoPlay" />
+        <q-btn 
           outline 
           label="God Mode" 
           class="q-mr-sm" 
@@ -124,11 +134,11 @@
                 <span class="text-grey-6">[{{ formatTime(event.timestamp) }}]</span> 
                 
                 <span v-if="event.event_type === 'MESSAGE'" class="text-blue-3">
-                  <span class="text-weight-bold">{{ event.sender }}</span>: {{ event.data.text }}
+                  <span class="text-weight-bold">{{ event.sender }}</span>: {{ event.payload.text }}
                 </span>
                 
                 <span v-else-if="event.event_type === 'TOOL_CALL'" class="text-orange-3">
-                  ⚙️ <span class="text-weight-bold">{{ event.sender }}</span> called <span class="text-italic">{{ event.data.tool }}</span>
+                  ⚙️ <span class="text-weight-bold">{{ event.sender }}</span> called <span class="text-italic">{{ event.payload.tool }}</span>
                 </span>
                 
                 <span v-else-if="event.event_type === 'TOOL_RESULT'" class="text-green-3">
@@ -136,7 +146,7 @@
                 </span>
 
                 <span v-else-if="event.event_type === 'SYSTEM_ALERT'" class="text-red-3">
-                  🚨 SYSTEM: {{ event.data.message }}
+                  🚨 SYSTEM: {{ event.payload.message }}
                 </span>
                 
                 <span v-else class="text-grey-4">
@@ -179,7 +189,7 @@ interface SimulationEvent {
   event_type: string;
   sender: string;
   timestamp?: string;
-  data: EventData;
+  payload: EventData;
 }
 
 const route = useRoute();
@@ -194,7 +204,6 @@ const objective = ref('');
 const synths = ref<Synth[]>([]);
 const stats = ref({ rounds: 0, messages: 0, tool_calls: 0 });
 const eventFeed = ref<SimulationEvent[]>([]);
-const nextEventOffset = ref(0);
 
 // Chat Mode State
 const activeChat = ref<string | null>(null);
@@ -207,6 +216,10 @@ const chatHistory = ref<Record<string, {sender: string, name: string, text: stri
 const chatScrollArea = ref<QScrollArea | null>(null);
 const feedScrollArea = ref<QScrollArea | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+let eventSource: EventSource | null = null;
+
+const isAutoPlay = ref(false);
+let autoPlayInterval: ReturnType<typeof setInterval> | null = null;
 
 const activeChatName = computed(() => {
   if (activeChat.value === 'GOD') return 'God System';
@@ -240,25 +253,57 @@ const fetchSimData = async () => {
   }
 };
 
-const pollEventsAndStats = async () => {
+const pollStats = async () => {
+    console.log(eventFeed.value);
   try {
     const statsRes = await fetch(`${baseUrl}/simulations/${envId}/stats`);
     if (statsRes.ok) {
         stats.value = (await statsRes.json()).stats;
     }
-    
-    const eventsRes = await fetch(`${baseUrl}/simulations/${envId}/events?since=${nextEventOffset.value}`);
-    if (eventsRes.ok) {
-        const data = await eventsRes.json();
-        if (data.events.length > 0) {
-            eventFeed.value.push(...data.events);
-            nextEventOffset.value = data.next_offset;
-            scrollToBottom(feedScrollArea);
-        }
-    }
   } catch (err) {
-    console.warn("Polling error (might be offline)", err);
+    console.warn("Stats polling error (might be offline)", err);
   }
+};
+
+const runOneRound = async () => {
+  try {
+    await fetch(`${baseUrl}/simulations/${envId}/rounds/one`, { method: 'POST' });
+  } catch (error) {
+    console.error("Failed to run round", error);
+  }
+};
+
+const toggleAutoPlay = () => {
+  isAutoPlay.value = !isAutoPlay.value;
+  if (isAutoPlay.value) {
+    autoPlayInterval = setInterval(() => {
+      void runOneRound();
+    }, 2500); // 2.5 seconds between rounds gives agents time to reply
+  } else {
+    if (autoPlayInterval) clearInterval(autoPlayInterval);
+  }
+};
+
+const setupEventStream = () => {
+  eventSource = new EventSource(`${baseUrl}/simulations/${envId}/stream`);
+  
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.events && data.events.length > 0) {
+        eventFeed.value.push(...data.events);
+        scrollToBottom(feedScrollArea);
+        // Refresh stats whenever a new event happens to keep the header perfectly in sync 
+        void pollStats();
+      }
+    } catch (err) {
+      console.error("Failed to parse SSE message", err);
+    }
+  };
+
+  eventSource.onerror = (err) => {
+    console.error("Event stream error, attempting to reconnect", err);
+  };
 };
 
 const sendMessage = async () => {
@@ -331,15 +376,21 @@ const formatTime = (isoString?: string) => {
 // Lifecycle
 onMounted(async () => {
   await fetchSimData();
-  await pollEventsAndStats();
-  // Poll every 1.5 seconds for new events natively from the environment log
+  setupEventStream();
+  
+  // Intial stats fetch
+  await pollStats();
+  
+  // We still poll stats infrequently just in case, but rely mainly on SSE updates
   pollInterval = setInterval(() => {
-    void pollEventsAndStats();
-  }, 1500); 
+    void pollStats();
+  }, 5000); 
 });
 
 onUnmounted(() => {
   if (pollInterval) clearInterval(pollInterval);
+  if (autoPlayInterval) clearInterval(autoPlayInterval);
+  if (eventSource) eventSource.close();
 });
 
 </script>

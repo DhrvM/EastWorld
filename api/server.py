@@ -8,9 +8,11 @@ import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+import asyncio
+import json
 
 from artifacts import ingest_artifact_from_text
 from api.session_store import SessionStore
@@ -284,6 +286,32 @@ def simulation_events(env_id: str, since: int = 0) -> dict:
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@app.get("/api/simulations/{env_id}/stream")
+async def stream_simulation_events(env_id: str):
+    try:
+        session = store.get(env_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    async def event_generator():
+        last_yielded = 0
+        while True:
+            # Get any new events that haven't been yielded yet
+            current_len = len(session.env.event_logs)
+            if current_len > last_yielded:
+                new_events = session.env.event_logs[last_yielded:current_len]
+                for event in new_events:
+                    # SSE format requires "data: " followed by the payload, ending with "\n\n"
+                    # We wrap it in a JSON array to match the old polling format exactly for the frontend
+                    yield f"data: {json.dumps({'events': [event], 'next_offset': last_yielded + 1})}\n\n"
+                    last_yielded += 1
+            
+            # Briefly sleep to yield control to the event loop
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.get("/api/simulations/{env_id}/traces")
 def simulation_traces(env_id: str, limit: int = 100) -> dict:
     try:
@@ -291,3 +319,13 @@ def simulation_traces(env_id: str, limit: int = 100) -> dict:
         return {"status": "ok", "traces": traces}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+@app.post("/api/simulations/{env_id}/stop")
+def stop_simulation(env_id: str) -> dict:
+    try:
+        session = store.get(env_id)
+        session.env.stop()
+        return {"status": "ok"}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
