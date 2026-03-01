@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any
+import os
+from tavily import TavilyClient
 
 from environment.main import Environment
 from god import God
@@ -110,6 +112,7 @@ class SessionStore:
         self,
         *,
         objective: str,
+        active_tools: list[str],
         synth_configs: list[SynthConfig],
         bootstrap_synths: bool = True,
         mock_mode: bool = False,
@@ -117,6 +120,77 @@ class SessionStore:
         env = Environment(objective=objective, max_turns=1000)
         observer = build_observer(run_id=env.id, trace_dir="runs/traces", console=False)
         env.set_observer(observer.emit)
+
+        # Register tools selected by the frontend
+        for tool in active_tools:
+            if tool == "execute_python":
+                env.register_tool(
+                    name="execute_python",
+                    description="Execute Python code in a secure sandbox and return the stdout/stderr.",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "description": "The Python code snippet to execute. Must print results to stdout."
+                            }
+                        },
+                        "required": ["code"]
+                    },
+                    function=self._tool_execute_python
+                )
+            elif tool == "read_file":
+                env.register_tool(
+                    name="read_file",
+                    description="Read the text content of a local file.",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Absolute or relative path to the file to read."
+                            }
+                        },
+                        "required": ["file_path"]
+                    },
+                    function=self._tool_read_file
+                )
+            elif tool == "create_file":
+                env.register_tool(
+                    name="create_file",
+                    description="Create a new local file with the provided text content.",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the file to create."
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "The text content to write to the file."
+                            }
+                        },
+                        "required": ["file_path", "content"]
+                    },
+                    function=self._tool_create_file
+                )
+            elif tool == "web_search":
+                env.register_tool(
+                    name="web_search",
+                    description="Search the web (mocked fallback if no search API is configured).",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The query string to search for."
+                            }
+                        },
+                        "required": ["query"]
+                    },
+                    function=self._tool_web_search
+                )
 
         # System tool to allow social sharing when external tools are present.
         env.register_tool(
@@ -214,3 +288,63 @@ class SessionStore:
             except json.JSONDecodeError:
                 continue
         return events
+
+    # --- Tool Implementations ---
+
+    def _tool_execute_python(self, code: str) -> dict:
+        import sys
+        import io
+        import contextlib
+        import traceback
+        
+        output_buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(output_buffer), contextlib.redirect_stderr(output_buffer):
+                exec(code, {})
+            return {"status": "success", "output": output_buffer.getvalue()}
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc(), "partial_output": output_buffer.getvalue()}
+
+    def _tool_read_file(self, file_path: str) -> dict:
+        import os
+        try:
+            if not os.path.exists(file_path):
+                return {"status": "error", "error": f"File '{file_path}' does not exist."}
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return {"status": "success", "content": content}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def _tool_create_file(self, file_path: str, content: str) -> dict:
+        import os
+        try:
+            # Create directories if they don't exist
+            os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return {"status": "success", "message": f"Successfully created/written to '{file_path}'."}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+            
+    def _tool_web_search(self, query: str) -> dict:
+        
+
+        try:
+            tavily_api_key = os.getenv("TAVILY_API_KEY")
+            if not tavily_api_key:
+                return {"status": "error", "error": "TAVILY_API_KEY not found in environment variables."}
+            
+            client = TavilyClient(api_key=tavily_api_key)
+            response = client.search(query=query, search_depth="advanced")
+            
+            results = []
+            for item in response.get("results", []):
+                results.append(f"Title: {item.get('title')}\nURL: {item.get('url')}\nContent: {item.get('content')}")
+            
+            return {
+                "status": "success",
+                "results": results
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
