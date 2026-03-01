@@ -69,10 +69,12 @@ def main() -> None:
 
         conversation.append(SynthMessage(role="user", content=user_input))
 
-        reply = alex.step(conversation)
-        print(f"\nAlex: {reply.content}\n")
-
-        conversation.append(reply)
+        result = alex.step(conversation)
+        if result.message:
+            print(f"\nAlex: {result.message.content}\n")
+            conversation.append(result.message)
+        elif result.skip:
+            print("\nAlex: [SKIP]\n")
 
 
 if __name__ == "__main__":

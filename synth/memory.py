@@ -7,6 +7,7 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 from supermemory import Supermemory
+from prompt import BOOTSTRAP_PERSONA_SYSTEM_PROMPT
 
 load_dotenv()
 
@@ -27,26 +28,6 @@ def _get_oai_client() -> OpenAI:
     if _oai_client is None:
         _oai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     return _oai_client
-
-# ── Prompt used to expand a raw persona into structured facts + memories ─────
-_BOOTSTRAP_SYSTEM_PROMPT = """\
-You are a persona-expansion engine.  Given a raw, highly specific persona description for a
-synthetic agent, produce TWO clearly-separated sections:
-
-## Static Facts
-Bullet-pointed list of immutable biographical facts (name, age, occupation,
-personality traits, core beliefs, etc.) This will also include the synth's talking style, personality, smartness level, etc.
-
-## Seed Memories
-A set of 5-10 first-person memory snippets that this persona would plausibly
-have.  Each memory should be a short paragraph written from the persona's
-point-of-view, referencing concrete events, emotions, or decisions.  The
-richer and more specific these are, the more lifelike the agent will behave.
-
-Be creative but stay strictly consistent with the supplied persona.  Do NOT
-add facts that contradict the description. Be Highly detailed, avoid vage values and descriptions.
-"""
-
 
 def bootstrap_persona(
     synth_id: str,
@@ -77,7 +58,7 @@ def bootstrap_persona(
     response = _get_oai_client().chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": _BOOTSTRAP_SYSTEM_PROMPT},
+            {"role": "system", "content": BOOTSTRAP_PERSONA_SYSTEM_PROMPT},
             {"role": "user", "content": persona_prompt},
         ],
         temperature=0.9,

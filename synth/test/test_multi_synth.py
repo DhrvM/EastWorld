@@ -113,7 +113,11 @@ def synth_loop(synth: Synth) -> None:
             continue
 
         try:
-            reply = synth.step(snap)
+            result = synth.step(snap)
+            if result.skip or not result.message:
+                mark_seen(sid)
+                continue
+            reply = result.message
             add_message(reply)
             mark_seen(sid)
             print(f"\n{sid}: {reply.content}\n")

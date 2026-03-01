@@ -15,19 +15,20 @@ class SynthConfig:
     synth_id : str
         Unique identifier — also used as the Supermemory container_tag.
     persona_prompt : str
-        Rich persona description.  The more detail (historic conversations,
-        past decisions, preferences, personality quirks) the more lifelike the
-        synth will be during bootstrapping.
+        Rich persona description.
+    synth_name : str
+        Human-readable display name. Defaults to synth_id.
     allowed_connections : list[str]
         IDs of other synths this agent is allowed to message.
     allowed_tools : list[str]
         Names of the tools this synth is allowed to execute.
     model : str
-        OpenAI model name to use for this synth (default ``gpt-4o``).
+        OpenAI model name (default ``gpt-4o``).
     """
 
     synth_id: str
     persona_prompt: str
+    synth_name: str = ""
     allowed_connections: list[str] = field(default_factory=list)
     allowed_tools: list[str] = field(default_factory=list)
     model: str = "gpt-4o"
@@ -37,24 +38,15 @@ class SynthConfig:
         if not re.match(r"^[A-Za-z0-9_-]+$", self.synth_id):
             raise ValueError(
                 f"synth_id {self.synth_id!r} is invalid — only alphanumeric "
-                f"characters, hyphens, and underscores are allowed "
-                f"(Supermemory containerTag constraint)."
+                f"characters, hyphens, and underscores are allowed."
             )
+        if not self.synth_name:
+            self.synth_name = self.synth_id
 
 
 @dataclass
 class SynthMessage:
-    """A single message in a synth conversation.
-
-    Parameters
-    ----------
-    role : str
-        One of ``"system"``, ``"user"``, ``"assistant"``.
-    content : str
-        The text body of the message.
-    name : str | None
-        Optional sender identifier (e.g. the synth_id of whoever sent it).
-    """
+    """A single message in a synth conversation."""
 
     role: str
     content: str
@@ -66,3 +58,15 @@ class SynthMessage:
         if self.name:
             msg["name"] = self.name
         return msg
+
+
+@dataclass
+class StepResult:
+    """Result of a single cognitive step.
+
+    Exactly one of ``message``, ``skip=True``, or ``tool_calls`` will be set.
+    """
+
+    message: Optional[SynthMessage] = None
+    tool_calls: Optional[list] = None
+    skip: bool = False

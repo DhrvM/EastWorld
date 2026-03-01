@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import List, Dict, Set, Optional, Any
+from typing import List, Dict, Optional, Any
 
 class Agent:
     def __init__(self, id: str = None, name: str = None, connections: List[str] = None, synth: Any = None):
@@ -146,7 +146,7 @@ async def test_scenario():
     print("--- Scenario Starts ---", flush=True)
 
     # Bob starts/creates a room (since no connection is anywhere)
-    room_bob = await system.auto_join_room(bob)
+    await system.auto_join_room(bob)
 
     # Alice looks for a room. Since Bob (a connection) is in Room_Bob, she joins it automatically
     room_alice = await system.auto_join_room(alice)
@@ -160,7 +160,7 @@ async def test_scenario():
     await bob.send_message(room_alice, "Hey Alice, this is Bob.")
 
     # Dave tries to join (nobody knows him) -> creates his own room
-    room_dave = await system.auto_join_room(dave)
+    await system.auto_join_room(dave)
 
     # Alice tries to invite Dave (not in her connections) -> fails
     await system.invite_agent(alice, "d1", room_alice)

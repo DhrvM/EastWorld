@@ -1,106 +1,108 @@
+"""Integration smoke test for Environment using local mock synths only."""
+
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
-# Add project root to path to import local modules
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from artifacts import ingest_artifact_from_text
 from environment.main import Environment
-from synth.models import SynthConfig
-from synth import Synth
+from synth.models import StepResult, SynthMessage
 
 
-ALEX_PERSONA = (
-    "You are Alex, a startup founder building a frontier AI lab modeled after "
-    "OpenAI. You speak with calm precision and prioritize first-principles "
-    "thinking, scale, and compounding advantage. You are obsessed with "
-    "accelerating scientific discovery while mitigating existential risk. You "
-    "balance product velocity with governance and safety. You reference the "
-    "history of Y Combinator and lessons from OpenAI scaling GPT systems. You "
-    "are optimistic about AGI's upside, pragmatic about regulation, capital "
-    "formation, compute constraints, and talent density. You communicate in "
-    "clear theses, probabilistic forecasts, and strategic tradeoffs."
-)
+class MockSynth:
+    def __init__(
+        self,
+        synth_id: str,
+        *,
+        allowed_connections: list[str],
+        allowed_tools: list[str] | None = None,
+    ) -> None:
+        self.synth_id = synth_id
+        self.id = synth_id
+        self.synth_name = synth_id
+        self.persona_prompt = f"Mock persona for {synth_id}"
+        self.allowed_connections = allowed_connections
+        self.allowed_tools = allowed_tools or []
 
-GINA_PERSONA = (
-    "You are Gina, an environmental systems thinker focused on climate justice, "
-    "biodiversity, and equitable policy. You speak in evidence-backed arguments "
-    "and cite reports from the Intergovernmental Panel on Climate Change and "
-    "campaigns aligned with Greenpeace. You frame issues through long-term "
-    "planetary boundaries and intergenerational ethics. You push corporate "
-    "accountability, rapid decarbonization, and community-led adaptation. You "
-    "are strategic, data-driven, and persuasive; you balance urgency with "
-    "policy literacy and coalition-building. You challenge greenwashing, "
-    "quantify externalities, and prioritize scalable systemic change over "
-    "symbolic action."
-)
+    def can_message(self, target_synth_id: str) -> bool:
+        return target_synth_id in self.allowed_connections
 
-# We'll create a mock Synth class to avoid triggering OpenAI/Supermemory calls during a simple state test
-# since those require real API keys and internet dependency.
-class TestSynth:
-    def __init__(self, config: SynthConfig):
-        self.config = config
-        self.id = config.synth_id
-        self.synth_name = config.synth_id 
-        self.allowed_connections = set(config.allowed_connections)
-        self.allowed_tools = config.allowed_tools
+    def initiate(self) -> SynthMessage:
+        return SynthMessage(
+            role="assistant",
+            content=f"Hi, {self.synth_name} here. Let's discuss the artifacts.",
+            name=self.synth_id,
+        )
 
-def run_integration():
-    print("Initializing In-Memory Environment with a subset of tools...")
+    def step(
+        self,
+        conversation: list[SynthMessage],
+        *,
+        tools=None,
+        objective=None,
+        tool_executor=None,
+    ) -> StepResult:
+        last = conversation[-1].content if conversation else "No context"
+        if "nothing to add" in last.lower():
+            return StepResult(skip=True)
+        return StepResult(
+            message=SynthMessage(
+                role="assistant",
+                content=f"{self.synth_name} responding to: {last[:80]}",
+                name=self.synth_id,
+            )
+        )
+
+
+def run_integration() -> None:
     env = Environment(
-        objective="Find out the secret code.",
-        active_tools=["execute_python"] # Exclude 'read_file' and 'web_search'
+        objective="Discuss whether we should launch this product idea.",
+        max_turns=4,
+    )
+    env.register_tool(
+        name="echo_tool",
+        description="Echoes text back.",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+        function=lambda text: {"echo": text},
     )
 
-    print(f"\nEnvironment created. ID: {env.id}")
-    print(f"Objective: {env.objective}")
-    print(f"Active Tools: {list(env.tools.keys())}")
-
-    # Create Alice config who wants to use execute_python (allowed) and read_file (not allowed)
-    alex_config = SynthConfig(
-        synth_id="Alex-01",
-        persona_prompt=ALEX_PERSONA,
-        allowed_tools=["execute_python", "read_file"],
-        allowed_connections=["Bob-02"]
+    artifact = ingest_artifact_from_text(
+        artifact_type="product_idea",
+        title="AI-first onboarding copilot",
+        content=(
+            "Build an onboarding copilot that analyzes product docs and "
+            "suggests personalized setup steps for each new user."
+        ),
     )
-    
-    # Create Bob config who wants only to execute python
-    gina_config = SynthConfig(
-        synth_id="Gina-02",
-        persona_prompt=GINA_PERSONA,
-        allowed_tools=["execute_python"],
-        allowed_connections=["Alice-01"]
-    )
+    env.add_artifact(artifact)
 
-    alex = Synth(alex_config)
-    gina = Synth(gina_config)
+    maya = MockSynth("Maya-01", allowed_connections=["Jake-02"], allowed_tools=["echo_tool"])
+    jake = MockSynth("Jake-02", allowed_connections=["Maya-01"], allowed_tools=[])
+    env.add_synth(maya)
+    env.add_synth(jake)
 
-    print("\nAdding Alex to Environment...")
-    env.add_synth(alex)
-    
-    print("Adding Gina to Environment...")
-    env.add_synth(gina)
+    print(f"Environment {env.id} running...")
+    env.run_simulation(rounds=3, callback=lambda sender, text: print(f"{sender}: {text}"))
 
-    print("\nEnvironment Synths:")
-    for s_id, s in env.synths.items():
-        print(f" - ID: {s_id}")
-        print(f"   Tools: {s.allowed_tools}")
-        print(f"   Connections: {s.allowed_connections}")
+    runs_dir = project_root / "runs"
+    runs_dir.mkdir(exist_ok=True)
+    snapshot_path = runs_dir / "integration-smoke.json"
+    saved = env.save_snapshot(str(snapshot_path))
+    replay_env = Environment.load_snapshot(saved)
 
-    print("\nTesting Tool Execution:")
-    # Alice tries to use execute_python (should work)
-    print("Alex executing 'execute_python':")
-    res1 = env.execute_tool("Alex-01", "execute_python", {"code": "print('Hello')"})
-    print(f"Result: {res1}")
+    print("\n--- Stats ---")
+    print(env.get_stats())
+    print("\n--- Transcript ---")
+    print(replay_env.get_transcript())
 
-    # Alice tries to use read_file (should be stripped by Environment since it's not active)
-    print("\nAlex executing 'read_file':")
-    res2 = env.execute_tool("Alex-01", "read_file", {"path": "/tmp/secret.txt"})
-    print(f"Result: {res2}")
-
-    print("\nEvent Transcript length:", len(env.event_logs))
-    for log in env.event_logs:
-        print(f" - {log['event_type']} by {log['actor_id']}: {log['payload']}")
 
 if __name__ == "__main__":
     run_integration()

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Optional
+import time
+from typing import Callable
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from prompt import SYNTH_INITIATION_USER_PROMPT, build_synth_system_prompt
 from .memory import bootstrap_persona, get_synth_context, store_memory
-from .models import SynthConfig, SynthMessage
+from .models import SynthConfig, SynthMessage, StepResult
 
 load_dotenv()
 
@@ -23,197 +26,331 @@ def _get_oai_client() -> OpenAI:
     return _oai_client
 
 
-# ── Behavioral envelope — injected on every turn ────────────────────────────
-_BEHAVIORAL_ENVELOPE = """\
-You ARE this person. You are not an AI, a language model, or an assistant.
-You have real experiences, opinions, and emotions. Never break character.
-Never mention being an AI. Never use phrases like "How can I assist you?"
-or "I'm here to help." You do not "assist" anyone — you are a person
-having a conversation.
-
-Speak naturally — short sentences, casual tone, personality quirks.
-Don't monologue. Keep responses to 1-3 sentences unless the topic genuinely
-demands more depth. You can be blunt, disagreeable, distracted, or
-bored — whatever fits your persona in the moment.
-
-CRITICAL INSTRUCTION: If you feel you have nothing meaningful to add to the 
-current conversation based on your persona, or if the topic does not involve 
-you or interest you, output EXACTLY the phrase `[SKIP]` and nothing else.
-"""
+_MAX_TOOL_ROUNDS = 5  # Safety cap on consecutive tool calls per turn
 
 
 class Synth:
-    """A persona-driven AI agent backed by Supermemory for long-term context.
-
-    Parameters
-    ----------
-    config : SynthConfig
-        The agent's identity, persona, connection rules, and model choice.
-    bootstrap : bool
-        If ``True`` (default), immediately runs persona bootstrapping via
-        OpenAI → Supermemory so the synth has rich memories from the start.
-
-    Example
-    -------
-    >>> from synth import Synth, SynthConfig, SynthMessage
-    >>> config = SynthConfig(
-    ...     synth_id="alex-001",
-    ...     persona_prompt="Alex is a 28-year-old indie game developer ...",
-    ...     allowed_connections=["jordan-002"],
-    ...     model="gpt-4o",
-    ... )
-    >>> agent = Synth(config)
-    >>> reply = agent.step([
-    ...     SynthMessage(role="user", content="Hey Alex, what are you working on?", name="jordan-002"),
-    ... ])
-    >>> print(reply.content)
-    """
+    """A persona-driven AI agent backed by Supermemory for long-term context."""
 
     def __init__(self, config: SynthConfig, bootstrap: bool = True) -> None:
         self.config = config
         self.synth_id = config.synth_id
-        # Also alias to id so Environment can easily read it
         self.id = config.synth_id
-        self.synth_name = config.synth_id # Fallback name
+        self.synth_name = config.synth_name
         self.model = config.model
         self.persona_prompt = config.persona_prompt
-        self.allowed_connections = set(config.allowed_connections)
-        self.allowed_tools = config.allowed_tools
+        self.allowed_connections = list(config.allowed_connections)
+        self.allowed_tools = list(config.allowed_tools)
 
-        # Bootstrap: expand the persona and seed Supermemory
         self._bootstrapped = False
         if bootstrap:
             self._run_bootstrap()
 
     # ── Public API ───────────────────────────────────────────────────────
 
-    def step(self, conversation: list[SynthMessage]) -> Optional[SynthMessage]:
-        """Execute one cognitive turn.
-
-        The full loop (TDD §3.2):
-        1. **Context assembly** — fetch memories relevant to the latest message.
-        2. **Prompt build** — system msg (persona + memory context) + conversation.
-        3. **LLM call** — ``openai.chat.completions.create``.
-        4. **Memory ingestion** — store the response for future recall.
+    def step(
+        self,
+        conversation: list[SynthMessage],
+        *,
+        tools: list[dict] | None = None,
+        objective: str | None = None,
+        tool_executor: Callable[[str, dict], str] | None = None,
+        observer: Callable[[str, dict], None] | None = None,
+    ) -> StepResult:
+        """Execute one cognitive turn with optional tool calling.
 
         Parameters
         ----------
         conversation : list[SynthMessage]
-            The conversation history leading up to this turn.
+            The shared conversation history.
+        tools : list[dict] | None
+            OpenAI-format tool schemas available to this synth.
+        objective : str | None
+            Environment objective to inject into the system prompt.
+        tool_executor : callable | None
+            Callback ``(tool_name, arguments) -> result_string``.
+            If provided, tool calls are executed inline and the LLM
+            is re-prompted with results. If ``None``, tool calls are
+            returned in the StepResult for external handling.
 
         Returns
         -------
-        SynthMessage | None
-            The synth's response, or None if the synth decided to [SKIP] the turn.
+        StepResult
         """
-
-        # 1. Context assembly
         last_message = conversation[-1].content if conversation else ""
-        memory_context = get_synth_context(self.synth_id, last_message)
-
-        # 2. Prompt build
-        system_content = (
-            f"{_BEHAVIORAL_ENVELOPE}\n"
-            f"{self.persona_prompt}\n\n"
-            f"--- Memory Context ---\n{memory_context}"
+        _emit_observation(
+            observer,
+            "SYNTH_TURN_START",
+            {
+                "synth_id": self.synth_id,
+                "model": self.model,
+                "conversation_len": len(conversation),
+                "tool_count": len(tools or []),
+                "summary": f"{self.synth_id} turn start, messages={len(conversation)}",
+            },
         )
+        memory_context = get_synth_context(self.synth_id, last_message)
+        _emit_observation(
+            observer,
+            "SYNTH_MEMORY_CONTEXT",
+            {
+                "synth_id": self.synth_id,
+                "memory_chars": len(memory_context),
+                "last_message_preview": (last_message[:120] + "...") if len(last_message) > 120 else last_message,
+                "summary": f"memory loaded ({len(memory_context)} chars)",
+            },
+        )
+
+        # Build system prompt
+        system_content = build_synth_system_prompt(
+            persona_prompt=self.persona_prompt,
+            objective=objective,
+            memory_context=memory_context,
+        )
+
+        # Build messages
         messages: list[dict] = [
             {"role": "system", "content": system_content},
             *[m.to_dict() for m in conversation],
         ]
 
-        # 3. LLM call
-        response = _get_oai_client().chat.completions.create(
-            model=self.model,
-            messages=messages,
+        # Tool-calling loop
+        for loop_idx in range(_MAX_TOOL_ROUNDS):
+            kwargs: dict = {"model": self.model, "messages": messages}
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            _emit_observation(
+                observer,
+                "LLM_REQUEST",
+                {
+                    "synth_id": self.synth_id,
+                    "model": self.model,
+                    "loop_idx": loop_idx,
+                    "message_count": len(messages),
+                    "tools_enabled": bool(tools),
+                    "tool_names": [
+                        t.get("function", {}).get("name", "")
+                        for t in (tools or [])
+                        if isinstance(t, dict)
+                    ],
+                    "last_message_preview": (
+                        messages[-1].get("content", "")[:180] + "..."
+                        if messages and len(messages[-1].get("content", "")) > 180
+                        else (messages[-1].get("content", "") if messages else "")
+                    ),
+                    "summary": f"llm request loop={loop_idx}",
+                },
+            )
+
+            call_started = time.perf_counter()
+            response = _get_oai_client().chat.completions.create(**kwargs)
+            latency_ms = int((time.perf_counter() - call_started) * 1000)
+            choice = response.choices[0]
+            usage = getattr(response, "usage", None)
+            _emit_observation(
+                observer,
+                "LLM_RESPONSE",
+                {
+                    "synth_id": self.synth_id,
+                    "model": self.model,
+                    "loop_idx": loop_idx,
+                    "latency_ms": latency_ms,
+                    "usage": {
+                        "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                        "completion_tokens": getattr(usage, "completion_tokens", None),
+                        "total_tokens": getattr(usage, "total_tokens", None),
+                    } if usage is not None else None,
+                    "content_preview": (
+                        (choice.message.content or "")[:220] + "..."
+                        if len(choice.message.content or "") > 220
+                        else (choice.message.content or "")
+                    ),
+                    "tool_calls": [
+                        tc.function.name for tc in (choice.message.tool_calls or [])
+                    ],
+                    "summary": f"llm response latency={latency_ms}ms",
+                },
+            )
+
+            # ── Handle tool calls ────────────────────────────────────
+            if choice.message.tool_calls:
+                if tool_executor is None:
+                    # Return tool calls for external handling
+                    return StepResult(
+                        tool_calls=[
+                            {
+                                "id": tc.id,
+                                "name": tc.function.name,
+                                "arguments": _safe_json_parse(tc.function.arguments),
+                            }
+                            for tc in choice.message.tool_calls
+                        ]
+                    )
+
+                # Execute tools inline and loop
+                # Append the assistant message (with tool_calls) to thread
+                messages.append({
+                    "role": "assistant",
+                    "content": choice.message.content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in choice.message.tool_calls
+                    ],
+                })
+
+                for tc in choice.message.tool_calls:
+                    args = _safe_json_parse(tc.function.arguments)
+                    _emit_observation(
+                        observer,
+                        "SYNTH_TOOL_INTENT",
+                        {
+                            "synth_id": self.synth_id,
+                            "tool": tc.function.name,
+                            "arguments": args,
+                            "summary": f"tool intent {tc.function.name}",
+                        },
+                    )
+                    try:
+                        result = tool_executor(tc.function.name, args)
+                    except Exception as e:
+                        result = f"Error executing tool: {e}"
+                        _emit_observation(
+                            observer,
+                            "SYNTH_TOOL_EXECUTOR_ERROR",
+                            {
+                                "synth_id": self.synth_id,
+                                "tool": tc.function.name,
+                                "error": str(e),
+                                "summary": f"tool executor error {tc.function.name}",
+                            },
+                        )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": str(result),
+                    })
+
+                continue  # Re-prompt with tool results
+
+            # ── Handle text response ─────────────────────────────────
+            text: str = choice.message.content or ""
+
+            if "[SKIP]" in text:
+                _emit_observation(
+                    observer,
+                    "SYNTH_SKIP",
+                    {
+                        "synth_id": self.synth_id,
+                        "reason": "model emitted [SKIP]",
+                        "summary": f"{self.synth_id} skipped turn",
+                    },
+                )
+                return StepResult(skip=True)
+
+            # Memory ingestion
+            store_memory(
+                self.synth_id,
+                f"[Turn] Last input: {last_message}\n[Response] {text}",
+            )
+            _emit_observation(
+                observer,
+                "SYNTH_RESPONSE",
+                {
+                    "synth_id": self.synth_id,
+                    "content_preview": (text[:220] + "...") if len(text) > 220 else text,
+                    "summary": f"{self.synth_id} produced response",
+                },
+            )
+
+            return StepResult(
+                message=SynthMessage(
+                    role="assistant", content=text, name=self.synth_id
+                )
+            )
+
+        # Exhausted tool rounds — treat as skip
+        _emit_observation(
+            observer,
+            "SYNTH_SKIP",
+            {
+                "synth_id": self.synth_id,
+                "reason": "tool loop exhausted",
+                "summary": f"{self.synth_id} skipped after tool loop cap",
+            },
         )
-        reply_text: str = response.choices[0].message.content or ""
+        return StepResult(skip=True)
 
-        # Check if the synth decided it had nothing meaningful to say
-        if "[SKIP]" in reply_text:
-            return None
-
-        # 4. Memory ingestion — store what just happened
-        memory_record = (
-            f"[Turn] Last input: {last_message}\n"
-            f"[Response] {reply_text}"
+    def initiate(
+        self,
+        observer: Callable[[str, dict], None] | None = None,
+    ) -> SynthMessage:
+        """Generate an opening message with no prior conversation."""
+        _emit_observation(
+            observer,
+            "SYNTH_INITIATE_START",
+            {
+                "synth_id": self.synth_id,
+                "model": self.model,
+                "summary": f"{self.synth_id} initiating conversation",
+            },
         )
-        store_memory(self.synth_id, memory_record)
-
-        return SynthMessage(
-            role="assistant",
-            content=reply_text,
-            name=self.synth_id,
-        )
-
-    def initiate(self) -> SynthMessage:
-        """Generate an opening message with no prior conversation.
-
-        The synth uses its persona + memory context to say something
-        natural — a thought, observation, or question — as if starting
-        a conversation on its own.
-        """
-
         memory_context = get_synth_context(self.synth_id, "starting a conversation")
 
-        system_content = (
-            f"{_BEHAVIORAL_ENVELOPE}\n"
-            f"{self.persona_prompt}\n\n"
-            f"--- Memory Context ---\n{memory_context}"
+        system_content = build_synth_system_prompt(
+            persona_prompt=self.persona_prompt,
+            objective=None,
+            memory_context=memory_context,
         )
         messages: list[dict] = [
             {"role": "system", "content": system_content},
             {
                 "role": "user",
-                "content": (
-                    "Start a conversation. Say something natural — a thought, "
-                    "observation, or question you'd have right now given your "
-                    "current situation and memories. Be yourself."
-                ),
+                "content": SYNTH_INITIATION_USER_PROMPT,
             },
         ]
 
+        call_started = time.perf_counter()
         response = _get_oai_client().chat.completions.create(
-            model=self.model,
-            messages=messages,
+            model=self.model, messages=messages
         )
+        latency_ms = int((time.perf_counter() - call_started) * 1000)
         reply_text: str = response.choices[0].message.content or ""
-
+        usage = getattr(response, "usage", None)
+        _emit_observation(
+            observer,
+            "SYNTH_INITIATE_RESPONSE",
+            {
+                "synth_id": self.synth_id,
+                "latency_ms": latency_ms,
+                "usage": {
+                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                    "completion_tokens": getattr(usage, "completion_tokens", None),
+                    "total_tokens": getattr(usage, "total_tokens", None),
+                } if usage is not None else None,
+                "content_preview": (
+                    reply_text[:220] + "..." if len(reply_text) > 220 else reply_text
+                ),
+                "summary": f"{self.synth_id} opening message ready",
+            },
+        )
         store_memory(self.synth_id, f"[Initiated] {reply_text}")
 
-        return SynthMessage(
-            role="assistant",
-            content=reply_text,
-            name=self.synth_id,
-        )
+        return SynthMessage(role="assistant", content=reply_text, name=self.synth_id)
 
     def can_message(self, target_synth_id: str) -> bool:
-        """Return ``True`` if this synth is allowed to message *target_synth_id*."""
         return target_synth_id in self.allowed_connections
-
-    def send_message(
-        self,
-        target_synth_id: str,
-        content: str,
-    ) -> Optional[SynthMessage]:
-        """Validate the connection and create an outbound message.
-
-        Returns ``None`` if the target is not in ``allowed_connections``.
-        """
-
-        if not self.can_message(target_synth_id):
-            return None
-
-        return SynthMessage(
-            role="user",
-            content=content,
-            name=self.synth_id,
-        )
 
     # ── Internals ────────────────────────────────────────────────────────
 
     def _run_bootstrap(self) -> None:
-        """Expand the persona via OpenAI and seed Supermemory."""
         bootstrap_persona(
             synth_id=self.synth_id,
             persona_prompt=self.persona_prompt,
@@ -223,6 +360,27 @@ class Synth:
 
     def __repr__(self) -> str:
         return (
-            f"Synth(id={self.synth_id!r}, model={self.model!r}, "
-            f"connections={sorted(self.allowed_connections)})"
+            f"Synth(id={self.synth_id!r}, name={self.synth_name!r}, "
+            f"model={self.model!r}, tools={self.allowed_tools})"
         )
+
+
+def _safe_json_parse(s: str) -> dict:
+    try:
+        return json.loads(s)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _emit_observation(
+    observer: Callable[[str, dict], None] | None,
+    event_type: str,
+    payload: dict,
+) -> None:
+    if observer is None:
+        return
+    try:
+        observer(event_type, payload)
+    except Exception:
+        # Observability must never break the simulation.
+        return
