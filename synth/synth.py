@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Callable
+from typing import Any, Callable, cast
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 from prompt import SYNTH_INITIATION_USER_PROMPT, build_synth_system_prompt
 from .memory import bootstrap_persona, get_synth_context, store_memory
@@ -109,14 +110,14 @@ class Synth:
         )
 
         # Build messages
-        messages: list[dict] = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_content},
             *[m.to_dict() for m in conversation],
         ]
 
         # Tool-calling loop
         for loop_idx in range(_MAX_TOOL_ROUNDS):
-            kwargs: dict = {"model": self.model, "messages": messages}
+            kwargs: dict = {"model": self.model, "messages": cast(list[ChatCompletionMessageParam], messages)}
             if tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
@@ -308,8 +309,16 @@ class Synth:
     def initiate(
         self,
         observer: Callable[[str, dict], None] | None = None,
+        context_override: str | None = None,
     ) -> SynthMessage:
-        """Generate an opening message with no prior conversation."""
+        """Generate an opening message with no prior conversation.
+
+        Parameters
+        ----------
+        context_override : str | None
+            Full objective + artifact context to inject into the system prompt
+            so the opening message addresses the task instead of being random.
+        """
         _emit_observation(
             observer,
             "SYNTH_INITIATE_START",
@@ -323,10 +332,10 @@ class Synth:
 
         system_content = build_synth_system_prompt(
             persona_prompt=self.persona_prompt,
-            objective=None,
+            objective=context_override,
             memory_context=memory_context,
         )
-        messages: list[dict] = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_content},
             {
                 "role": "user",
@@ -336,7 +345,7 @@ class Synth:
 
         call_started = time.perf_counter()
         response = _get_oai_client().chat.completions.create(
-            model=self.model, messages=messages
+            model=self.model, messages=cast(list[ChatCompletionMessageParam], messages)
         )
         latency_ms = int((time.perf_counter() - call_started) * 1000)
         reply_text: str = response.choices[0].message.content or ""

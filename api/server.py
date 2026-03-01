@@ -79,14 +79,20 @@ if web_dir.exists():
 
 
 def _build_configs_from_input(synths: list[SynthInput]) -> list[SynthConfig]:
+    all_ids = [s.synth_id for s in synths]
     configs: list[SynthConfig] = []
     for s in synths:
+        # Default: every synth can talk to every other synth + human
+        if s.allowed_connections:
+            connections = s.allowed_connections
+        else:
+            connections = [sid for sid in all_ids if sid != s.synth_id] + ["human"]
         configs.append(
             SynthConfig(
                 synth_id=s.synth_id,
                 synth_name=s.synth_id,
                 persona_prompt=s.persona_prompt,
-                allowed_connections=s.allowed_connections,
+                allowed_connections=connections,
                 allowed_tools=s.allowed_tools,
             )
         )
@@ -324,7 +330,7 @@ def simulation_traces(env_id: str, limit: int = 100) -> dict:
 def stop_simulation(env_id: str) -> dict:
     try:
         session = store.get(env_id)
-        session.env.stop()
+        session.env.finish()
         return {"status": "ok"}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))

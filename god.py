@@ -48,8 +48,12 @@ class God:
             for s in self.env.synths.values()
         )
 
+        # Build artifacts summary for context
+        from artifacts import artifact_context_block
+        artifacts_summary = artifact_context_block(self.env.artifacts, max_chars=10000)
+
         system_prompt = build_god_system_prompt(
-            environment_objective=self.env.objective,
+            environment_objective=f"{self.env.objective}\n\nARTIFACTS:\n{artifacts_summary}",
             synth_details=synth_details,
             stats=stats,
             transcript=transcript,

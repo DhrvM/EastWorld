@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from datetime import datetime, timezone
@@ -284,12 +285,13 @@ class Environment:
             f"People in the room:\n{participant_info}\n\n"
             f"Conversation so far has {len(self.conversation)} messages."
         )
-        artifact_context = artifact_context_block(self.artifacts)
+        artifact_context = artifact_context_block(self.artifacts, max_chars=40000)
         if artifact_context:
             full_objective += (
-                "\n\nExternal artifacts shared by the human user:\n"
+                "\n\n--- UPLOADED DOCUMENTS (ARTIFACTS) ---\n"
                 f"{artifact_context}\n"
-                "Use these artifacts as primary evidence in your discussion."
+                "CRITICAL: The user has provided these documents. You MUST cite them "
+                "using [source: Title] when discussing their content."
             )
         return full_objective
 
@@ -660,10 +662,15 @@ class Environment:
                 )
 
     def _call_synth_initiate(self, synth: Any) -> SynthMessage:
+        """Initiate conversation with full objective context."""
+        full_context = self._build_full_objective()
         try:
-            return synth.initiate(observer=self._observe)
+            return synth.initiate(
+                observer=self._observe,
+                context_override=full_context,
+            )
         except TypeError as e:
-            if "unexpected keyword argument 'observer'" in str(e):
+            if "unexpected keyword argument" in str(e):
                 return synth.initiate()
             raise
 
@@ -676,9 +683,11 @@ class Environment:
         objective: str,
         tool_executor: Callable[[str, dict], str],
     ) -> Any:
+        # Isolate conversation history so each synth gets its own copy
+        isolated_history = [copy.copy(msg) for msg in conversation]
         try:
             return synth.step(
-                conversation,
+                isolated_history,
                 tools=tools,
                 objective=objective,
                 tool_executor=tool_executor,
@@ -687,7 +696,7 @@ class Environment:
         except TypeError as e:
             if "unexpected keyword argument 'observer'" in str(e):
                 return synth.step(
-                    conversation,
+                    isolated_history,
                     tools=tools,
                     objective=objective,
                     tool_executor=tool_executor,

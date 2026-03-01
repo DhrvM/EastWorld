@@ -52,7 +52,24 @@ def ingest_artifact_from_file(
     path = Path(file_path).expanduser().resolve()
     if not path.exists() or not path.is_file():
         raise ArtifactIngestionError(f"file not found: {path}")
-    content = path.read_text(encoding="utf-8")
+
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(str(path))
+            content = "\n".join(
+                page.extract_text() or "" for page in reader.pages
+            )
+        except ImportError:
+            raise ArtifactIngestionError(
+                "pypdf is required to read .pdf files. install it via pip."
+            )
+        except Exception as e:
+            raise ArtifactIngestionError(f"failed to read pdf: {e}")
+    else:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+
     file_metadata = {"file_path": str(path)}
     if metadata:
         file_metadata.update(metadata)

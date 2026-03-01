@@ -22,12 +22,14 @@ def _create_simulation() -> str:
     res = client.post(
         "/api/simulations",
         json={
-            "task": "Discuss launch risks and priorities for the uploaded artifacts.",
+            "environment": {
+                "objective": "Discuss launch risks and priorities for the uploaded artifacts.",
+            },
             "mock_mode": True,
             "bootstrap_synths": False,
             "synths": [
-                {"name": "Ava", "persona": "You are Ava, a practical PM."},
-                {"name": "Noah", "persona": "You are Noah, a detail-oriented engineer."},
+                {"synth_id": "Ava", "persona_prompt": "You are Ava, a practical PM."},
+                {"synth_id": "Noah", "persona_prompt": "You are Noah, a detail-oriented engineer."},
             ],
         },
     )

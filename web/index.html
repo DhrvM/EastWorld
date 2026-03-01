@@ -18,6 +18,9 @@
     .row > * { flex: 1; }
     pre { white-space: pre-wrap; background: #0f1115; border: 1px solid #30333a; border-radius: 6px; padding: 8px; max-height: 280px; overflow: auto; }
     .small { font-size: 12px; color: #b8b8b8; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; pointer-events: none; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -29,14 +32,14 @@
       <h2>1) Create Simulation</h2>
       <label>Task / Objective</label>
       <textarea id="task" placeholder="Describe what synths should discuss"></textarea>
-      <label>Synths JSON (name + persona)</label>
+      <label>Synths JSON (synth_id + persona_prompt)</label>
       <textarea id="synths">[
-  {"name":"Alice","persona":"You are Alice, a product-minded PM."},
-  {"name":"Bob","persona":"You are Bob, a skeptical engineer."},
-  {"name":"Cara","persona":"You are Cara, a growth marketer."}
+  {"synth_id":"Alice","persona_prompt":"You are Alice, a product-minded PM."},
+  {"synth_id":"Bob","persona_prompt":"You are Bob, a skeptical engineer."},
+  {"synth_id":"Cara","persona_prompt":"You are Cara, a growth marketer."}
 ]</textarea>
       <label><input type="checkbox" id="mockMode" checked /> Mock mode (no OpenAI/Supermemory)</label>
-      <button onclick="createSimulation()">Create Simulation</button>
+      <button onclick="withLoader(this, createSimulation)">Create Simulation</button>
       <p id="simInfo" class="small"></p>
     </div>
 
@@ -53,7 +56,7 @@
       <input id="artifactTitle" placeholder="Artifact title" />
       <label>Upload (.txt/.md/.pdf)</label>
       <input id="artifactFile" type="file" />
-      <button onclick="uploadArtifact()">Upload Artifact</button>
+      <button onclick="withLoader(this, uploadArtifact)">Upload Artifact</button>
       <p id="artifactStatus" class="small"></p>
     </div>
   </div>
@@ -62,12 +65,12 @@
     <div class="card">
       <h2>3) Round Controls</h2>
       <div class="row">
-        <button onclick="runOneRound()">Run 1 Round</button>
-        <button onclick="runManyRounds()">Run N Rounds</button>
+        <button onclick="withLoader(this, runOneRound)">Run 1 Round</button>
+        <button onclick="withLoader(this, runManyRounds)">Run N Rounds</button>
       </div>
       <label>N rounds</label>
       <input id="roundsN" type="number" min="1" max="100" value="3" />
-      <button class="secondary" onclick="refreshStats()">Refresh Stats</button>
+      <button class="secondary" onclick="withLoader(this, refreshStats)">Refresh Stats</button>
       <pre id="stats"></pre>
     </div>
 
@@ -77,7 +80,7 @@
       <select id="chatSynth"></select>
       <label>Your message</label>
       <textarea id="chatText" placeholder="Ask a synth a question"></textarea>
-      <button onclick="chatSynth()">Send</button>
+      <button onclick="withLoader(this, chatSynth)">Send</button>
       <pre id="chatResult"></pre>
     </div>
   </div>
@@ -86,25 +89,37 @@
     <div class="card">
       <h2>5) GOD Query</h2>
       <textarea id="godQuestion" placeholder="Ask for analysis"></textarea>
-      <button onclick="askGod()">Ask GOD</button>
+      <button onclick="withLoader(this, askGod)">Ask GOD</button>
       <pre id="godAnswer"></pre>
     </div>
     <div class="card">
       <h2>6) Transcript Events</h2>
-      <button class="secondary" onclick="refreshEvents()">Refresh Events</button>
+      <button class="secondary" onclick="withLoader(this, refreshEvents)">Refresh Events</button>
       <pre id="events"></pre>
     </div>
   </div>
 
   <div class="card" style="margin-top:16px;">
     <h2>7) Trace Stream (JSONL events)</h2>
-    <button class="secondary" onclick="refreshTraces()">Refresh Traces</button>
+    <button class="secondary" onclick="withLoader(this, refreshTraces)">Refresh Traces</button>
     <pre id="traces"></pre>
   </div>
 
   <script>
     let envId = "";
     let eventOffset = 0;
+
+    async function withLoader(btn, asyncFn) {
+      const original = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Working…';
+      try {
+        await asyncFn();
+      } finally {
+        btn.innerHTML = original;
+        btn.disabled = false;
+      }
+    }
 
     async function api(path, method = "GET", body = null, isForm = false) {
       const opts = { method, headers: {} };
@@ -136,7 +151,9 @@
         const synths = JSON.parse(document.getElementById("synths").value);
         const mockMode = document.getElementById("mockMode").checked;
         const data = await api("/api/simulations", "POST", {
-          task: task || "Discuss provided artifacts and produce actionable feedback.",
+          environment: {
+            objective: task || "Discuss provided artifacts and produce actionable feedback."
+          },
           synths,
           bootstrap_synths: !mockMode,
           mock_mode: mockMode

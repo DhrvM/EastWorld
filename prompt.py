@@ -28,6 +28,8 @@ Grounding rules:
 2) If evidence is missing or unclear, explicitly mark uncertainty using:
    [uncertain: <what is missing>].
 3) Do not present unsupported assumptions as facts.
+4) Do not repeat the previous speaker's message verbatim. Always add new
+   value — a unique opinion, critique, question, or insight in your own words.
 """
 
 
@@ -65,7 +67,11 @@ def build_synth_system_prompt(
 ) -> str:
     parts = [SYNTH_BEHAVIORAL_ENVELOPE, persona_prompt]
     if objective:
-        parts.append(f"\n--- Current Situation ---\n{objective}")
+        parts.append(
+            f"\n--- PRIMARY DIRECTIVE ---\n"
+            f"You must actively discuss and address the following objective/artifacts. "
+            f"Do not ignore this context:\n{objective}"
+        )
     parts.append(f"\n--- Memory Context ---\n{memory_context}")
     return "\n".join(parts)
 
