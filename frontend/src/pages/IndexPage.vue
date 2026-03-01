@@ -96,7 +96,7 @@
                 :options="envTools" 
                 label="Select Tools" 
                 use-chips 
-                v-if="envTools.length > 0"
+                v-if="envTools.length !== 0"
               />
               <div v-else class="text-caption text-orange-4">
                 Enable Global Tools in Environment Settings first.
@@ -118,6 +118,7 @@
         unelevated 
         rounded
         class="shadow-4"
+        no-caps
         :disable="synths.length === 0"
       />
     </q-page-sticky>
@@ -125,10 +126,14 @@
 </template>
 
 <script setup lang="ts">
+import { useQuasar } from 'quasar';
 import { ref } from 'vue';
+import { useRouter } from 'vue-router';
 
 // --- Environment State ---
 const envObjective = ref('');
+const $q = useQuasar();
+const router = useRouter();
 const envTools = ref<string[]>(['execute_python']);
 
 // --- Synth State ---
@@ -176,10 +181,16 @@ const availableConnections = (currentSynth: SynthConfig) => {
 const launchSimulation = async () => {
   // Construct the payload mapping for the existing backend API
   const payload = {
-    task: envObjective.value || "Survive and interact.",
+    environment: {
+      objective: envObjective.value || "Survive and interact.",
+      active_tools: envTools.value,
+
+    },
     synths: synths.value.map(s => ({
-      name: s.synth_id,
-      persona: s.persona_prompt || "You are a helpful assistant."
+      synth_id: s.synth_id,
+      persona_prompt: s.persona_prompt || "You are a helpful assistant.",
+      allowed_connections: s.allowed_connections,
+      allowed_tools: s.allowed_tools,
     })),
     bootstrap_synths: false, // Set to true if you want OpenAI bootstrap to run
     mock_mode: true // Mocks the LLM to avoid API key requirement for testing
@@ -205,10 +216,19 @@ const launchSimulation = async () => {
     
     const data = await response.json();
     console.log("Simulation created successfully:", data);
-    alert(`Simulation launched!\nEnvironment ID: ${data.env_id}`);
+    $q.notify({
+      type: 'positive',
+      message: 'Simulation launched successfully!',
+      timeout: 2000,
+    });
+    await router.push(`/simulation/${data.env_id}`);  
   } catch (error) {
     console.error("Failed to push to backend:", error);
-    alert(`Request failed. Is the API server running on port 8000?\nError: ${error}`);
+    $q.notify({
+      type: 'negative',
+      message: 'Failed to launch simulation.',
+      timeout: 2000,
+    });
   }
 };
 </script>
